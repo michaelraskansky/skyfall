@@ -54,13 +54,6 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
-  ECRRepository:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: skyfall
-      ImageScanningConfiguration:
-        ScanOnPush: true
-
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -267,4 +260,4 @@ Outputs:
 
   ECRRepository:
     Description: ECR repository URI
-    Value: !GetAtt ECRRepository.RepositoryUri
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/skyfall"
