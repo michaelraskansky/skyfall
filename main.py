@@ -67,7 +67,7 @@ from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from models import CorrelatedEvent, EventSource, RawEvent
 from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
-from processing.llm_parser import parse_with_llm
+from processing.llm_parser import parse_with_llm, close_client as close_llm_client
 
 # ── Structured logging ────────────────────────────────────────────────────────
 structlog.configure(
@@ -235,6 +235,7 @@ async def main() -> None:
         logger.warning("Queue drain timed out")
 
     await engine.close()
+    await close_llm_client()
     logger.info("Shutdown complete")
 
 

@@ -13,6 +13,7 @@ import json
 import logging
 
 import aioboto3
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
 from models import LLMParsedEvent
@@ -75,6 +76,7 @@ async def parse_with_llm(text: str) -> LLMParsedEvent | None:
         return None
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
 async def _call_bedrock(text: str) -> str:
     """Call Claude on Bedrock and return the raw response text."""
     client = await _get_bedrock_client()
@@ -99,3 +101,11 @@ async def _call_bedrock(text: str) -> str:
     response_bytes = await response["body"].read()
     response_json = json.loads(response_bytes)
     return response_json["content"][0]["text"]
+
+
+async def close_client() -> None:
+    """Close the Bedrock client. Called during shutdown."""
+    global _client
+    if _client is not None:
+        await _client.__aexit__(None, None, None)
+        _client = None

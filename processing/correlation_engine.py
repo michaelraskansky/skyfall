@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import aioboto3
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 if TYPE_CHECKING:
     from asyncio import Queue
@@ -77,6 +78,7 @@ class CorrelationEngine:
         if self._resource:
             await self._resource.__aexit__(None, None, None)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def ingest(self, event: RawEvent) -> None:
         """Store a raw sensor event in DynamoDB with geohash key and TTL."""
         if event.latitude is not None and event.longitude is not None:
@@ -105,6 +107,7 @@ class CorrelationEngine:
         await self._table.put_item(Item=item)
         logger.debug("Ingested event %s from %s into cell %s", event.event_id, event.source.value, pk)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def _query_cell(self, pk: str) -> list[dict]:
         """Query all items in a single geohash cell within the time window."""
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self._window)).isoformat()
