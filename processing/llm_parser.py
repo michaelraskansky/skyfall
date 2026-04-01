@@ -1,26 +1,10 @@
 """
-LLM Triage Parser
-==================
+LLM Triage Parser (Amazon Bedrock)
+====================================
 
-Takes unstructured text (typically from the social-media listener) and
-passes it to an LLM with a strict *disaster-response analyst* system
-prompt.  The LLM must return a structured JSON object matching the
-``LLMParsedEvent`` schema:
-
-    {
-        "is_valid_anomaly": true,
-        "approximate_origin": "Houston, TX area",
-        "debris_trajectory_or_blast_radius": "NW to SE, ~3 km radius",
-        "event_classification": "industrial_accident",
-        "confidence_score": 8
-    }
-
-Two providers are supported (selected via ``LLM_PROVIDER`` env var):
-  - **openai** – any OpenAI-compatible chat endpoint (GPT-4o, etc.)
-  - **gemini** – Google Generative AI (Gemini Pro, etc.)
-
-The function is intentionally synchronous-looking but uses ``asyncio``
-under the hood so it can be ``await``-ed from the main event loop.
+Takes unstructured text and passes it to Claude on Bedrock with a
+disaster-response analyst system prompt. Returns a structured
+LLMParsedEvent or None if the response is unparseable.
 """
 
 from __future__ import annotations
@@ -28,15 +12,12 @@ from __future__ import annotations
 import json
 import logging
 
+import aioboto3
+
 from config import settings
 from models import LLMParsedEvent
 
 logger = logging.getLogger(__name__)
-
-# ── System prompt ─────────────────────────────────────────────────────────────
-# The LLM is instructed to act as a disaster-response analyst and ONLY
-# return valid JSON.  We repeat the schema inside the prompt so the model
-# can self-validate.
 
 SYSTEM_PROMPT = """\
 You are a disaster-response intelligence analyst embedded in a real-time
@@ -45,7 +26,7 @@ emergency broadcast fragments, or sensor descriptions and determine whether
 they describe a genuine aerospace debris re-entry, industrial explosion,
 or other catastrophic thermal / kinetic event.
 
-You MUST respond with ONLY a valid JSON object – no markdown fences, no
+You MUST respond with ONLY a valid JSON object - no markdown fences, no
 explanation text.  The JSON schema is:
 
 {
@@ -65,16 +46,25 @@ Rules:
   like location, time, physical descriptions (flash, boom, heat, smoke).
 """
 
+_client = None
+
+
+async def _get_bedrock_client():
+    """Get or create a Bedrock runtime client."""
+    global _client
+    if _client is None:
+        session = aioboto3.Session()
+        _client = await session.client(
+            "bedrock-runtime",
+            region_name=settings.aws_region,
+        ).__aenter__()
+    return _client
+
 
 async def parse_with_llm(text: str) -> LLMParsedEvent | None:
-    """
-    Send *text* to the configured LLM and return a validated
-    ``LLMParsedEvent``, or ``None`` if the LLM response is unparseable.
-    """
-    provider = settings.llm_provider.lower()
-
+    """Send text to Bedrock Claude and return a validated LLMParsedEvent, or None."""
     try:
-        raw_json = await _call_llm(provider, text)
+        raw_json = await _call_bedrock(text)
         parsed = json.loads(raw_json)
         return LLMParsedEvent(**parsed)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -85,72 +75,27 @@ async def parse_with_llm(text: str) -> LLMParsedEvent | None:
         return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Provider implementations
-# ═══════════════════════════════════════════════════════════════════════════════
+async def _call_bedrock(text: str) -> str:
+    """Call Claude on Bedrock and return the raw response text."""
+    client = await _get_bedrock_client()
 
-
-async def _call_llm(provider: str, text: str) -> str:
-    """Dispatch to the appropriate LLM backend and return the raw JSON string."""
-    if provider == "openai":
-        return await _call_openai(text)
-    elif provider == "gemini":
-        return await _call_gemini(text)
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider}")
-
-
-async def _call_openai(text: str) -> str:
-    """
-    Call the OpenAI Chat Completions API (works with any compatible
-    endpoint, including Azure OpenAI and local vLLM servers).
-    """
-    import openai
-
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
-
-    response = await client.chat.completions.create(
-        model=settings.llm_model,
-        temperature=0.1,  # near-deterministic for structured output
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "system": SYSTEM_PROMPT,
+        "messages": [
             {"role": "user", "content": f"Analyze the following text:\n\n{text}"},
         ],
-        # Ask for JSON mode where supported (GPT-4o, GPT-4-turbo).
-        response_format={"type": "json_object"},
+    })
+
+    response = await client.invoke_model(
+        modelId=settings.bedrock_model_id,
+        body=body,
+        contentType="application/json",
+        accept="application/json",
     )
 
-    return response.choices[0].message.content or "{}"
-
-
-async def _call_gemini(text: str) -> str:
-    """
-    Call the Google Generative AI (Gemini) API.
-
-    ``google-generativeai`` is synchronous, so we run it in a thread
-    executor to avoid blocking the event loop.
-    """
-    import asyncio
-    import google.generativeai as genai
-
-    genai.configure(api_key=settings.gemini_api_key)
-
-    model = genai.GenerativeModel(
-        model_name=settings.llm_model,
-        system_instruction=SYSTEM_PROMPT,
-    )
-
-    # GenerativeModel.generate_content is sync – offload to a thread.
-    loop = asyncio.get_running_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: model.generate_content(
-            f"Analyze the following text:\n\n{text}",
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-            ),
-        ),
-    )
-
-    return response.text or "{}"
+    response_bytes = await response["body"].read()
+    response_json = json.loads(response_bytes)
+    return response_json["content"][0]["text"]
