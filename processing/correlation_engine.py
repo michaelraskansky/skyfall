@@ -1,36 +1,35 @@
 """
-Stateful Correlation Engine
-============================
+Stateful Correlation Engine (DynamoDB)
+=======================================
 
-The correlation engine is the "brain" of the triage layer.  It maintains
-a sliding window of recent sensor events (backed by Redis) and decides
-when independent signals corroborate each other.
+Cross-references sensor events using DynamoDB with geohash-based
+spatial indexing.
 
 Algorithm
 ---------
-1. Every ``RawEvent`` is stored in Redis as a geo-indexed entry with a TTL
-   equal to the correlation window (default 5 minutes).
-2. When the LLM parser flags an event as a valid anomaly with sufficient
-   confidence, the engine queries Redis for *other* sensor events within
-   a configurable radius (~50 km) and time window.
-3. If **two or more distinct sensor sources** agree, the event is elevated
-   to ``CRITICAL`` and a ``CorrelatedEvent`` is emitted.
+1. Every RawEvent is stored in DynamoDB keyed by geohash cell + timestamp,
+   with a TTL for automatic cleanup.
+2. When the LLM parser flags a high-confidence event, the engine queries
+   the event's geohash cell plus its 8 neighbors for corroborating signals.
+3. If two or more distinct sensor sources agree within the time window,
+   the event is elevated to CRITICAL.
 
-Redis data layout
------------------
-- ``events:geo``  – a Redis GEO set mapping event IDs to lat/lon.
-- ``events:{id}`` – a Redis HASH holding the serialised ``RawEvent`` JSON,
-                     with a TTL of ``CORRELATION_WINDOW_SEC``.
+DynamoDB layout
+---------------
+- PK: ``geohash#<4-char>`` - groups events by ~20km geographic cell
+- SK: ``<ISO-timestamp>#<event_id>`` - enables time-range queries
+- TTL: ``expires_at`` - auto-cleanup after correlation window
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
+import aioboto3
 
 if TYPE_CHECKING:
     from asyncio import Queue
@@ -44,80 +43,79 @@ from models import (
     LLMParsedEvent,
     RawEvent,
 )
+from processing.geohash import encode, neighbors
 
 logger = logging.getLogger(__name__)
 
-# ── Tunables ──────────────────────────────────────────────────────────────────
-# Radius in kilometres used for geo-proximity matching.
-CORRELATION_RADIUS_KM: float = 50.0
+_NO_COORDS_GEOHASH = "none"
 
 
 class CorrelationEngine:
-    """
-    Stateful engine backed by Redis that cross-references sensor events.
-
-    Usage::
-
-        engine = CorrelationEngine()
-        await engine.connect()
-
-        # Called by every ingestion sensor:
-        await engine.ingest(raw_event)
-
-        # Called after LLM triage returns a high-confidence result:
-        correlated = await engine.try_correlate(raw_event, llm_result)
-    """
+    """DynamoDB-backed engine that cross-references sensor events."""
 
     def __init__(self) -> None:
-        self._redis: aioredis.Redis | None = None
+        self._session: aioboto3.Session | None = None
+        self._table_name = settings.dynamodb_table_name
         self._window = settings.correlation_window_sec
         self._min_confidence = settings.min_confidence_score
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────
+        self._precision = settings.geohash_precision
+        self._table = None
+        self._resource = None
 
     async def connect(self) -> None:
-        """Open the Redis connection pool."""
-        self._redis = aioredis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-        )
-        logger.info("Correlation engine connected to Redis at %s", settings.redis_url)
+        """Open the DynamoDB connection."""
+        self._session = aioboto3.Session()
+        kwargs = {"region_name": settings.aws_region}
+        if settings.dynamodb_endpoint_url:
+            kwargs["endpoint_url"] = settings.dynamodb_endpoint_url
+        self._resource = await self._session.resource("dynamodb", **kwargs).__aenter__()
+        self._table = await self._resource.Table(self._table_name)
+        logger.info("Correlation engine connected to DynamoDB table %s", self._table_name)
 
     async def close(self) -> None:
-        """Shut down the Redis connection pool."""
-        if self._redis:
-            await self._redis.close()
-
-    # ── Ingestion ─────────────────────────────────────────────────────────
+        """Shut down the DynamoDB connection."""
+        if self._resource:
+            await self._resource.__aexit__(None, None, None)
 
     async def ingest(self, event: RawEvent) -> None:
-        """
-        Store a raw sensor event in Redis with geo-index and TTL.
-
-        Every event is recorded regardless of source so that later
-        correlation queries can find neighbouring signals.
-        """
-        assert self._redis is not None, "Call connect() first"
-
-        key = f"events:{event.event_id}"
-        payload = event.model_dump_json()
-
-        # Store the event hash with a TTL.
-        await self._redis.set(key, payload, ex=self._window)
-
-        # Geo-index if coordinates are available.
+        """Store a raw sensor event in DynamoDB with geohash key and TTL."""
         if event.latitude is not None and event.longitude is not None:
-            await self._redis.geoadd(
-                "events:geo",
-                (event.longitude, event.latitude, event.event_id),
-            )
-            # The GEO set itself has no TTL, so we rely on key expiry for
-            # the detail hash.  Stale geo entries are harmless – the
-            # correlation step checks for the detail key before counting.
+            gh = encode(event.latitude, event.longitude, precision=self._precision)
+        else:
+            gh = _NO_COORDS_GEOHASH
 
-        logger.debug("Ingested event %s from %s", event.event_id, event.source.value)
+        pk = f"geohash#{gh}"
+        sk = f"{event.timestamp.isoformat()}#{event.event_id}"
+        expires_at = int(time.time()) + self._window + 60
 
-    # ── Correlation ───────────────────────────────────────────────────────
+        item = {
+            "pk": pk,
+            "sk": sk,
+            "event_id": event.event_id,
+            "source": event.source.value,
+            "latitude": str(event.latitude) if event.latitude is not None else None,
+            "longitude": str(event.longitude) if event.longitude is not None else None,
+            "description": event.description,
+            "raw_payload": json.dumps(event.raw_payload),
+            "timestamp": event.timestamp.isoformat(),
+            "expires_at": expires_at,
+        }
+        item = {k: v for k, v in item.items() if v is not None}
+
+        await self._table.put_item(Item=item)
+        logger.debug("Ingested event %s from %s into cell %s", event.event_id, event.source.value, pk)
+
+    async def _query_cell(self, pk: str) -> list[dict]:
+        """Query all items in a single geohash cell within the time window."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self._window)).isoformat()
+        response = await self._table.query(
+            KeyConditionExpression="pk = :pk AND sk >= :cutoff",
+            ExpressionAttributeValues={
+                ":pk": pk,
+                ":cutoff": cutoff,
+            },
+        )
+        return response.get("Items", [])
 
     async def try_correlate(
         self,
@@ -125,18 +123,7 @@ class CorrelationEngine:
         llm_result: LLMParsedEvent,
         output_queue: Queue[CorrelatedEvent] | None = None,
     ) -> CorrelatedEvent | None:
-        """
-        Attempt to correlate *trigger_event* with other recent sensor data.
-
-        Returns a ``CorrelatedEvent`` (possibly CRITICAL) if correlation
-        succeeds, or ``None`` if the event stands alone.
-
-        If *output_queue* is provided, CRITICAL events are automatically
-        pushed onto it for the alerting layer.
-        """
-        assert self._redis is not None
-
-        # Gate: only correlate high-confidence LLM results.
+        """Attempt to correlate trigger_event with other recent sensor data."""
         if not llm_result.is_valid_anomaly:
             return None
         if llm_result.confidence_score < self._min_confidence:
@@ -148,35 +135,40 @@ class CorrelationEngine:
             )
             return None
 
-        # ── Find nearby events in the geo index ──────────────────────────
         contributing: list[RawEvent] = [trigger_event]
         sources_seen: set[str] = {trigger_event.source.value}
 
         if trigger_event.latitude is not None and trigger_event.longitude is not None:
-            nearby_ids: list = await self._redis.georadius(
-                "events:geo",
-                trigger_event.longitude,
-                trigger_event.latitude,
-                CORRELATION_RADIUS_KM,
-                unit="km",
+            gh = encode(
+                trigger_event.latitude, trigger_event.longitude,
+                precision=self._precision,
             )
+            cells_to_query = [f"geohash#{gh}"] + [
+                f"geohash#{n}" for n in neighbors(gh)
+            ]
 
-            for eid in nearby_ids:
-                if eid == trigger_event.event_id:
-                    continue
+            for cell_pk in cells_to_query:
+                items = await self._query_cell(cell_pk)
+                for item in items:
+                    eid = item.get("event_id")
+                    if eid == trigger_event.event_id:
+                        continue
+                    source_val = item.get("source", "")
+                    if source_val not in sources_seen:
+                        sources_seen.add(source_val)
+                        lat = float(item["latitude"]) if item.get("latitude") else None
+                        lon = float(item["longitude"]) if item.get("longitude") else None
+                        neighbour = RawEvent(
+                            event_id=eid,
+                            source=EventSource(source_val),
+                            latitude=lat,
+                            longitude=lon,
+                            description=item.get("description", ""),
+                            timestamp=datetime.fromisoformat(item["timestamp"]),
+                            raw_payload=json.loads(item.get("raw_payload", "{}")),
+                        )
+                        contributing.append(neighbour)
 
-                raw_json = await self._redis.get(f"events:{eid}")
-                if raw_json is None:
-                    continue  # expired – stale geo entry
-
-                neighbour = RawEvent.model_validate_json(raw_json)
-
-                # Only count if it's from a *different* sensor source.
-                if neighbour.source.value not in sources_seen:
-                    sources_seen.add(neighbour.source.value)
-                    contributing.append(neighbour)
-
-        # ── Decide severity ──────────────────────────────────────────────
         if len(sources_seen) >= 2:
             severity = EventSeverity.CRITICAL
         elif llm_result.confidence_score >= 8:
@@ -186,7 +178,6 @@ class CorrelationEngine:
         else:
             severity = EventSeverity.LOW
 
-        # Map the LLM classification string to our enum.
         try:
             classification = EventClassification(llm_result.event_classification)
         except ValueError:
@@ -200,7 +191,7 @@ class CorrelationEngine:
             contributing_events=contributing,
             llm_analysis=llm_result,
             summary=(
-                f"{severity.value} – {classification.value}: "
+                f"{severity.value} - {classification.value}: "
                 f"{llm_result.approximate_origin}. "
                 f"Corroborated by {len(sources_seen)} source(s): "
                 f"{', '.join(sorted(sources_seen))}."
@@ -214,7 +205,6 @@ class CorrelationEngine:
             correlated.corroborating_sources,
         )
 
-        # Auto-push CRITICAL events to the output queue.
         if severity == EventSeverity.CRITICAL and output_queue is not None:
             await output_queue.put(correlated)
 
