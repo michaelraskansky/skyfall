@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""
 
+    # -- Logging --
+    log_format: str = "json"  # "json" or "console"
+
     # -- Correlation tuning --
     correlation_window_sec: int = 300
     min_confidence_score: int = 6

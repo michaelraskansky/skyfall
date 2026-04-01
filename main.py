@@ -53,8 +53,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 
+import structlog
 import uvicorn
 
 from config import settings
@@ -67,13 +69,23 @@ from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
 from processing.llm_parser import parse_with_llm
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)-28s  %(message)s",
-    stream=sys.stdout,
+# ── Structured logging ────────────────────────────────────────────────────────
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer()
+        if settings.log_format == "console"
+        else structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
 )
-logger = logging.getLogger("orchestrator")
+
+logger = structlog.get_logger("orchestrator")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -169,47 +181,61 @@ async def run_webhook_server() -> None:
 async def main() -> None:
     """Wire everything together and run forever."""
 
-    # ── Shared queues ─────────────────────────────────────────────────────
     raw_queue: asyncio.Queue[RawEvent] = asyncio.Queue(maxsize=10_000)
     alert_queue: asyncio.Queue[CorrelatedEvent] = asyncio.Queue(maxsize=1_000)
 
-    # Inject the queue into the FastAPI webhook app.
     set_event_queue(raw_queue)
 
-    # ── Correlation engine ────────────────────────────────────────────────
     engine = CorrelationEngine()
     await engine.connect()
 
-    # ── Launch all tasks concurrently ─────────────────────────────────────
     tasks = [
-        # Ingestion layer
         asyncio.create_task(poll_firms(raw_queue), name="firms_poller"),
         asyncio.create_task(poll_adsb(raw_queue), name="adsb_poller"),
         asyncio.create_task(listen_telegram(raw_queue), name="telegram_listener"),
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
-        # Processing layer
         asyncio.create_task(triage_loop(raw_queue, alert_queue, engine), name="triage"),
-        # Output layer
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),
     ]
 
-    logger.info("All %d tasks launched.  Pipeline is live.", len(tasks))
+    logger.info("All tasks launched", task_count=len(tasks))
 
-    # Run until one task crashes (fail-fast).
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    shutdown_event = asyncio.Event()
+
+    def _handle_signal(sig, frame):
+        logger.info("Received signal, initiating graceful shutdown", signal=sig)
+        shutdown_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    shutdown_task = asyncio.create_task(shutdown_event.wait(), name="shutdown_watcher")
+    all_tasks = tasks + [shutdown_task]
+    done, pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_COMPLETED)
 
     for task in done:
-        if task.exception():
+        if task == shutdown_task:
+            logger.info("Graceful shutdown initiated")
+        elif task.exception():
             logger.critical(
-                "Task %s crashed: %s", task.get_name(), task.exception()
+                "Task crashed",
+                task_name=task.get_name(),
+                error=str(task.exception()),
             )
 
-    # Cancel remaining tasks gracefully.
     for task in pending:
         task.cancel()
 
+    logger.info("Draining queues...")
+    try:
+        await asyncio.wait_for(raw_queue.join(), timeout=10.0)
+        await asyncio.wait_for(alert_queue.join(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("Queue drain timed out")
+
     await engine.close()
+    logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

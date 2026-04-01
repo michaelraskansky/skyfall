@@ -61,4 +61,6 @@ class TestEmergencyWebhook:
         client, _queue = webhook_client
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["checks"]["queue"] is True

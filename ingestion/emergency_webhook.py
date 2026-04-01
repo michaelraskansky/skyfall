@@ -95,5 +95,10 @@ async def receive_emergency(payload: EmergencyPayload, request: Request):
 
 @app.get("/health")
 async def health():
-    """Simple liveness probe for load balancers / container orchestrators."""
-    return {"status": "ok"}
+    """Readiness probe for load balancers / container orchestrators."""
+    checks = {"queue": _event_queue is not None}
+    all_ok = all(checks.values())
+    return {
+        "status": "ok" if all_ok else "degraded",
+        "checks": checks,
+    }
