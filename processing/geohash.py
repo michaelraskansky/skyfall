@@ -7,8 +7,6 @@ Reference: https://en.wikipedia.org/wiki/Geohash
 """
 
 _BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
-_DECODE_MAP = {ch: i for i, ch in enumerate(_BASE32)}
-
 _NEIGHBORS = {
     "n": {"even": "p0r21436x8zb9dcf5h7kjnmqesgutwvy", "odd": "bc01fg45238967deuvhjyznpkmstqrwx"},
     "s": {"even": "14365h7k9dcfesgujnmqp0r2twvyx8zb", "odd": "238967debc01fg45uvhjyznpkmstqrwx"},
@@ -35,6 +33,13 @@ def encode(latitude: float, longitude: float, precision: int = 4) -> str:
     Returns:
         Geohash string of the given precision.
     """
+    if not -90.0 <= latitude <= 90.0:
+        raise ValueError(f"latitude must be in [-90, 90], got {latitude}")
+    if not -180.0 <= longitude <= 180.0:
+        raise ValueError(f"longitude must be in [-180, 180], got {longitude}")
+    if precision < 1:
+        raise ValueError(f"precision must be >= 1, got {precision}")
+
     lat_range = (-90.0, 90.0)
     lon_range = (-180.0, 180.0)
     is_lon = True  # longitude bit comes first
@@ -83,6 +88,9 @@ def _adjacent(geohash: str, direction: str) -> str:
     """
     last_char = geohash[-1]
     parent = geohash[:-1]
+    # In the geohash neighbor algorithm, 'parity' refers to the encoding
+    # dimension, not length parity. Even-length hashes end on a latitude bit
+    # (odd parity), odd-length hashes end on a longitude bit (even parity).
     parity = "odd" if len(geohash) % 2 == 0 else "even"
 
     if last_char in _BORDERS[direction][parity] and parent:

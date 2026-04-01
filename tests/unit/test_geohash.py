@@ -108,14 +108,10 @@ class TestNeighbors:
             assert len(n) == 5
 
     def test_nearby_locations_share_prefix_or_are_neighbors(self):
-        # Two nearby points in Houston should either share a geohash prefix
-        # or be geohash neighbors
-        gh1 = encode(29.76, -95.37, precision=4)
-        gh2 = encode(29.77, -95.36, precision=4)
-        # They should either be the same cell, share a prefix, or be neighbors
-        if gh1 != gh2:
-            n1 = neighbors(gh1)
-            assert gh2 in n1 or gh1[:3] == gh2[:3]
+        """Two nearby points should either share a geohash or be neighbors."""
+        gh1 = encode(29.76, -95.37, precision=6)
+        gh2 = encode(29.76, -95.36, precision=6)
+        assert gh1 == gh2 or gh2 in neighbors(gh1)
 
     def test_neighbors_of_known_geohash(self):
         # Just verify it returns strings from the base32 alphabet
@@ -124,3 +120,19 @@ class TestNeighbors:
         for n in result:
             for ch in n:
                 assert ch in base32
+
+
+class TestEncodeValidation:
+    """Tests for input validation in geohash encode()."""
+
+    def test_invalid_latitude_raises(self):
+        with pytest.raises(ValueError):
+            encode(91.0, 0.0, precision=4)
+
+    def test_invalid_longitude_raises(self):
+        with pytest.raises(ValueError):
+            encode(0.0, 181.0, precision=4)
+
+    def test_precision_zero_raises(self):
+        with pytest.raises(ValueError):
+            encode(0.0, 0.0, precision=0)
