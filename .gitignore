@@ -38,3 +38,6 @@ htmlcov/
 
 # Docker
 *.log
+
+# Worktrees
+.worktrees/
