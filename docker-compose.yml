@@ -1,0 +1,39 @@
+##
+## docker compose up --build
+##
+## This spins up the tracker worker alongside a local Redis instance.
+## For production on AWS, replace the Redis service with ElastiCache
+## and run the worker on EC2 / ECS / Fargate.
+##
+
+services:
+  # ── Redis (correlation engine state store) ──────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Tracker worker (all layers in one process) ─────────────────────────
+  tracker:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"  # FastAPI emergency webhook
+    env_file:
+      - .env
+    environment:
+      # Override Redis URL to point at the compose service.
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+volumes:
+  redis_data:
