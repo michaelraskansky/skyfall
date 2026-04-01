@@ -10,45 +10,45 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application-wide settings – populated from env vars or .env file."""
+    """Application-wide settings - populated from env vars or .env file."""
 
-    # ── NASA FIRMS ────────────────────────────────────────────────────────
+    # -- NASA FIRMS --
     firms_api_key: str = ""
-    firms_poll_interval_sec: int = 180  # 3 minutes
-    # Comma-separated bounding boxes: "west,south,east,north;..."
-    firms_bounding_boxes: str = "-125,24,-66,50"  # CONUS default
+    firms_poll_interval_sec: int = 180
+    firms_bounding_boxes: str = "-125,24,-66,50"
 
-    # ── ADS-B Exchange ────────────────────────────────────────────────────
+    # -- ADS-B Exchange --
     adsb_api_key: str = ""
     adsb_api_base_url: str = "https://adsbexchange.com/api/aircraft/v2"
     adsb_poll_interval_sec: int = 30
-    # Hex codes of high-altitude survey / government aircraft (comma-sep)
     adsb_watch_hex_codes: str = ""
 
-    # ── Telegram Listener ─────────────────────────────────────────────────
+    # -- Telegram Listener --
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
-    telegram_channels: str = ""  # comma-separated channel usernames
+    telegram_channels: str = ""
 
-    # ── LLM (OpenAI-compatible or Gemini) ─────────────────────────────────
-    llm_provider: str = "openai"  # "openai" | "gemini"
-    openai_api_key: str = ""
-    gemini_api_key: str = ""
-    llm_model: str = "gpt-4o"
+    # -- AWS --
+    aws_region: str = "us-east-1"
 
-    # ── Redis ─────────────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
+    # -- Amazon Bedrock (LLM) --
+    bedrock_model_id: str = "anthropic.claude-sonnet-4-20250514"
 
-    # ── Alerting ──────────────────────────────────────────────────────────
+    # -- DynamoDB --
+    dynamodb_table_name: str = "skyfall-events"
+    dynamodb_endpoint_url: str = ""  # Override for local testing
+
+    # -- Alerting --
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""
 
-    # ── Correlation tuning ────────────────────────────────────────────────
-    correlation_window_sec: int = 300  # 5-minute correlation window
-    min_confidence_score: int = 6  # LLM confidence threshold (1-10)
+    # -- Correlation tuning --
+    correlation_window_sec: int = 300
+    min_confidence_score: int = 6
+    geohash_precision: int = 4
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
-# Singleton – import this everywhere.
+# Singleton - import this everywhere.
 settings = Settings()
