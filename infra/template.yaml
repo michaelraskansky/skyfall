@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Skyfall - Aerospace Debris & Industrial Anomaly Tracker"
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for ECS tasks and ALB (must be in at least 2 AZs)
+
+  ImageUri:
+    Type: String
+    Description: ECR image URI (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/skyfall:latest)
+
+  FirmsApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+  AdsbApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+  SlackWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+  DiscordWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+Resources:
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: skyfall-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: skyfall
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/skyfall
+      RetentionInDays: 30
+
+  AppSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: skyfall/app-secrets
+      SecretString: !Sub |
+        {
+          "FIRMS_API_KEY": "${FirmsApiKey}",
+          "ADSB_API_KEY": "${AdsbApiKey}",
+          "SLACK_WEBHOOK_URL": "${SlackWebhookUrl}",
+          "DISCORD_WEBHOOK_URL": "${DiscordWebhookUrl}"
+        }
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: skyfall-task-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref AppSecrets
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: skyfall-task
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: bedrock-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: "*"
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt EventsTable.Arn
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Skyfall ECS service
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Skyfall ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: skyfall-alb
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref SubnetIds
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: skyfall-tg
+      Port: 8000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: skyfall
+      CapacityProviders:
+        - FARGATE
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: skyfall
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "512"
+      Memory: "1024"
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: skyfall
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref "AWS::Region"
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref EventsTable
+            - Name: LOG_FORMAT
+              Value: json
+          Secrets:
+            - Name: FIRMS_API_KEY
+              ValueFrom: !Sub "${AppSecrets}:FIRMS_API_KEY::"
+            - Name: ADSB_API_KEY
+              ValueFrom: !Sub "${AppSecrets}:ADSB_API_KEY::"
+            - Name: SLACK_WEBHOOK_URL
+              ValueFrom: !Sub "${AppSecrets}:SLACK_WEBHOOK_URL::"
+            - Name: DISCORD_WEBHOOK_URL
+              ValueFrom: !Sub "${AppSecrets}:DISCORD_WEBHOOK_URL::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: skyfall
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: skyfall
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: skyfall
+          ContainerPort: 8000
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  WebhookEndpoint:
+    Description: Emergency webhook URL
+    Value: !Sub "http://${ALB.DNSName}/api/v1/emergency"
+
+  DynamoDBTable:
+    Description: DynamoDB table name
+    Value: !Ref EventsTable
+
+  ECRRepository:
+    Description: ECR repository URI
+    Value: !GetAtt ECRRepository.RepositoryUri
