@@ -59,7 +59,7 @@ async def poll_firms(event_queue: Queue[RawEvent]) -> None:
     api_key = settings.firms_api_key
     if not api_key:
         logger.warning("FIRMS_API_KEY not set – FIRMS poller disabled.")
-        return
+        await asyncio.Event().wait()  # sleep forever, don't crash the pipeline
 
     bboxes = _parse_bounding_boxes(settings.firms_bounding_boxes)
     interval = settings.firms_poll_interval_sec

@@ -79,7 +79,7 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
 
     if not api_id or not api_hash or not channels_raw:
         logger.warning("Telegram credentials not set – Telegram listener disabled.")
-        return
+        await asyncio.Event().wait()
 
     # Import Telethon lazily so the rest of the app works without it.
     try:

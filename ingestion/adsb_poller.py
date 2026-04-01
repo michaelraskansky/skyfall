@@ -61,7 +61,7 @@ async def poll_adsb(event_queue: Queue[RawEvent]) -> None:
 
     if not api_key:
         logger.warning("ADSB_API_KEY not set – ADS-B poller disabled.")
-        return
+        await asyncio.Event().wait()
 
     logger.info(
         "ADS-B poller starting – interval=%ds, watching %d hex codes",
