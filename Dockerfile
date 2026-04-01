@@ -1,28 +1,23 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
-LABEL maintainer="debris-tracker"
-LABEL description="Real-Time Aerospace Debris & Industrial Anomaly Tracker"
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Install OS-level dependencies (none needed for now, but layer is cached).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Install dependencies first (cache-friendly)
+COPY pyproject.toml ./
+RUN uv sync --no-dev --no-install-project
 
-# Install Python dependencies first (layer caching).
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code.
+# Copy application code
 COPY . .
 
-# Expose the FastAPI emergency webhook port.
+# Install the project itself
+RUN uv sync --no-dev
+
 EXPOSE 8000
 
-# Health-check against the FastAPI liveness endpoint.
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["uv", "run", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health'); r.raise_for_status()"]
 
-# Run the orchestrator.
-CMD ["python", "main.py"]
+CMD ["uv", "run", "python", "main.py"]
