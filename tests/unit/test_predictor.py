@@ -162,15 +162,38 @@ class TestBoostPhase:
         assert high_thrust.seconds_until_impact > low_thrust.seconds_until_impact
 
     def test_zero_velocity_safeguard(self):
-        """Thrust decomposition must not crash when horizontal velocity is zero."""
-        # At t=0 the vehicle has zero velocity — the heading safeguard
-        # should default to due east without raising ZeroDivisionError.
+        """Thrust decomposition must not crash when velocity is zero."""
+        # At t=0 the vehicle has zero velocity — during clear-off,
+        # thrust should be pure vertical without raising ZeroDivisionError.
         thrust_enu = DebrisTrajectoryPredictor._compute_thrust_enu(
-            ve=0.0, vn=0.0, thrust=25.0, pitch_deg=85.0,
+            ve=0.0, vn=0.0, vu=0.0, thrust=25.0, pitch_kick_deg=2.0, elapsed=0.0,
         )
         assert len(thrust_enu) == 3
-        # Vertical component should be dominant (85° pitch ≈ sin(85°) * 25 ≈ 24.9)
-        assert thrust_enu[2] > 24.0
-        # Horizontal defaults to due east: (thrust*cos(85°), 0, ...)
-        assert thrust_enu[0] > 0  # east component
-        assert thrust_enu[1] == pytest.approx(0.0, abs=0.01)  # no north component
+        # During clear-off (elapsed=0), thrust is pure vertical
+        assert thrust_enu[0] == 0.0
+        assert thrust_enu[1] == 0.0
+        assert thrust_enu[2] == 25.0
+
+    def test_gravity_turn_follows_velocity(self):
+        """After clear-off, thrust should align with velocity vector."""
+        # Vehicle moving northeast and up at >50 m/s — gravity turn mode
+        thrust_enu = DebrisTrajectoryPredictor._compute_thrust_enu(
+            ve=100.0, vn=100.0, vu=200.0, thrust=25.0,
+            pitch_kick_deg=2.0, elapsed=10.0,
+        )
+        speed = (100**2 + 100**2 + 200**2) ** 0.5
+        # Thrust should be proportional to velocity direction
+        assert thrust_enu[0] == pytest.approx(25.0 * 100.0 / speed, abs=0.1)
+        assert thrust_enu[1] == pytest.approx(25.0 * 100.0 / speed, abs=0.1)
+        assert thrust_enu[2] == pytest.approx(25.0 * 200.0 / speed, abs=0.1)
+
+    def test_clear_off_is_vertical(self):
+        """During first 5 seconds, thrust should be pure vertical regardless of velocity."""
+        thrust_enu = DebrisTrajectoryPredictor._compute_thrust_enu(
+            ve=10.0, vn=5.0, vu=30.0, thrust=25.0,
+            pitch_kick_deg=2.0, elapsed=3.0,
+        )
+        # Speed is ~33 m/s (< 50), still in clear-off
+        assert thrust_enu[0] == 0.0
+        assert thrust_enu[1] == 0.0
+        assert thrust_enu[2] == 25.0

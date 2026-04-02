@@ -184,7 +184,7 @@ class DebrisTrajectoryPredictor:
         # Resolve boost parameters (request overrides or defaults)
         burn_time = request.burn_time_seconds if request.burn_time_seconds is not None else 60.0
         thrust = request.thrust_to_mass_ratio if request.thrust_to_mass_ratio is not None else 25.0
-        pitch_deg = request.pitch_angle_deg if request.pitch_angle_deg is not None else 85.0
+        pitch_kick_deg = request.pitch_angle_deg if request.pitch_angle_deg is not None else 2.0
 
         # ── 3. Initialise the EKF ────────────────────────────────────────
         self._init_ekf(obs)
@@ -217,7 +217,7 @@ class DebrisTrajectoryPredictor:
             flight_phase=flight_phase,
             burn_time=burn_time,
             thrust=thrust,
-            pitch_deg=pitch_deg,
+            pitch_kick_deg=pitch_kick_deg,
         )
 
         # ── 6. Convert results back to geodetic ─────────────────────────
@@ -433,19 +433,56 @@ class DebrisTrajectoryPredictor:
 
     @staticmethod
     def _compute_thrust_enu(
-        ve: float, vn: float, thrust: float, pitch_deg: float,
+        ve: float,
+        vn: float,
+        vu: float,
+        thrust: float,
+        pitch_kick_deg: float,
+        elapsed: float,
+        clear_off_sec: float = 5.0,
     ) -> Tuple[float, float, float]:
         """
-        Decompose thrust into ENU components using pitch angle and heading.
+        Compute thrust vector in ENU using a three-stage gravity turn program.
 
-        The pitch angle is measured from the local horizontal (90° = straight
-        up, 0° = horizontal).  The horizontal component is applied along
-        the current heading (horizontal velocity direction).
+        Stage 1 – Vertical clear-off:
+            While ``elapsed < clear_off_sec`` or total speed < 50 m/s,
+            thrust is pure vertical: (0, 0, thrust).
 
-        Zero-velocity safeguard: if horizontal speed < 0.1 m/s, heading
-        defaults to due east (1, 0).
+        Stage 2 – Pitch-over kick:
+            At the moment clear-off ends, tilt thrust ``pitch_kick_deg``
+            degrees off vertical toward the heading direction.
+
+        Stage 3 – Gravity turn:
+            Align thrust exactly with the full 3D velocity vector.
+            Gravity naturally curves the trajectory into a ballistic arc.
+
+        Zero-velocity safeguard: if total speed < 0.1 m/s, thrust
+        straight up to avoid division by zero.
         """
-        pitch_rad = math.radians(pitch_deg)
+        total_speed = math.sqrt(ve ** 2 + vn ** 2 + vu ** 2)
+
+        # Stage 1: Vertical clear-off
+        if elapsed < clear_off_sec or total_speed < 50.0:
+            return (0.0, 0.0, thrust)
+
+        # Stage 3: Gravity turn (velocity-following)
+        # After the initial kick, thrust aligns with velocity vector.
+        # The kick is implicit — once the vehicle has horizontal velocity
+        # from the kick (or perturbation), gravity turn takes over.
+        if total_speed >= 50.0:
+            horiz_speed = math.sqrt(ve ** 2 + vn ** 2)
+
+            # If vehicle has meaningful velocity, follow it
+            if total_speed > 0.1:
+                thrust_e = thrust * (ve / total_speed)
+                thrust_n = thrust * (vn / total_speed)
+                thrust_u = thrust * (vu / total_speed)
+                return (thrust_e, thrust_n, thrust_u)
+
+        # Fallback: pitch-over kick (Stage 2)
+        # Applied when transitioning from clear-off but velocity is
+        # still mostly vertical — kick toward due east.
+        kick_rad = math.radians(pitch_kick_deg)
         horiz_speed = math.sqrt(ve ** 2 + vn ** 2)
         if horiz_speed < 0.1:
             heading_e, heading_n = 1.0, 0.0
@@ -453,9 +490,9 @@ class DebrisTrajectoryPredictor:
             heading_e = ve / horiz_speed
             heading_n = vn / horiz_speed
 
-        thrust_e = thrust * math.cos(pitch_rad) * heading_e
-        thrust_n = thrust * math.cos(pitch_rad) * heading_n
-        thrust_u = thrust * math.sin(pitch_rad)
+        thrust_e = thrust * math.sin(kick_rad) * heading_e
+        thrust_n = thrust * math.sin(kick_rad) * heading_n
+        thrust_u = thrust * math.cos(kick_rad)
         return (thrust_e, thrust_n, thrust_u)
 
     def _propagate_to_impact(
@@ -466,7 +503,7 @@ class DebrisTrajectoryPredictor:
         flight_phase: str = "ballistic",
         burn_time: float = 60.0,
         thrust: float = 25.0,
-        pitch_deg: float = 85.0,
+        pitch_kick_deg: float = 2.0,
     ) -> Tuple[np.ndarray, np.ndarray, float, List[dict]]:
         """
         Propagate the filtered state forward in time until altitude ≤ 0
@@ -536,8 +573,10 @@ class DebrisTrajectoryPredictor:
 
             # ── Compute thrust for this step ─────────────────────────────
             if current_phase == "boost":
-                ve, vn = float(ekf.x[3]), float(ekf.x[4])
-                thrust_enu = self._compute_thrust_enu(ve, vn, thrust, pitch_deg)
+                ve, vn, vu_current = float(ekf.x[3]), float(ekf.x[4]), float(ekf.x[5])
+                thrust_enu = self._compute_thrust_enu(
+                    ve, vn, vu_current, thrust, pitch_kick_deg, elapsed,
+                )
             else:
                 thrust_enu = (0.0, 0.0, 0.0)
 
