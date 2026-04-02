@@ -1,8 +1,8 @@
-"""Unit tests for geoparser dictionary lookup."""
+"""Unit tests for geoparser dictionary lookup and preposition extraction."""
 
 import pytest
 
-from processing.geoparser import _dictionary_lookup
+from processing.geoparser import _dictionary_lookup, _extract_location_candidate
 
 
 class TestDictionaryLookup:
@@ -55,3 +55,28 @@ class TestDictionaryLookup:
         result = _dictionary_lookup("غزة ودمشق")
         assert result is not None
         assert result == pytest.approx((31.5, 34.47), abs=0.01)
+
+
+class TestPrepositionExtraction:
+    """Tests for _extract_location_candidate(text)."""
+
+    def test_fi_in(self):
+        result = _extract_location_candidate("انفجار في حي الشجاعية")
+        assert result == "حي الشجاعية"
+
+    def test_ala_on(self):
+        result = _extract_location_candidate("قصف على المنطقة الجنوبية")
+        assert result == "المنطقة الجنوبية"
+
+    def test_min_from(self):
+        result = _extract_location_candidate("صواريخ من الضفة الغربية")
+        assert result == "الضفة الغربية"
+
+    def test_no_preposition(self):
+        result = _extract_location_candidate("هذا خبر بدون موقع")
+        assert result is None
+
+    def test_max_three_words(self):
+        result = _extract_location_candidate("انفجار في كلمة واحدة اثنتان ثلاث أربع")
+        words = result.split() if result else []
+        assert len(words) <= 3

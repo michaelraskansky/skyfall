@@ -1,14 +1,47 @@
 """Geoparser — extract geographic coordinates from text.
 
 Tier 1: Dictionary lookup against ~35 known Middle-East locations.
+Tier 2: Preposition extraction + Nominatim geocoding fallback.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Tuple
 
 Coords = Tuple[float, float]
+
+# ---------------------------------------------------------------------------
+# Preposition extraction
+# ---------------------------------------------------------------------------
+
+_PREPOSITIONS = [
+    "في",       # in
+    "على",      # on
+    "من",       # from
+    "إلى",      # to
+    "شمال",     # north of
+    "جنوب",     # south of
+    "شرق",      # east of
+    "غرب",      # west of
+    "قرب",      # near
+    "استهداف",  # targeting
+]
+
+_PREP_PATTERN = re.compile(
+    r"(?:" + "|".join(re.escape(p) for p in _PREPOSITIONS) + r")\s+"
+    r"([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,2})",
+    re.UNICODE,
+)
+
+# ---------------------------------------------------------------------------
+# Nominatim cache & rate-limit lock
+# ---------------------------------------------------------------------------
+
+_cache: dict[str, Coords | None] = {}
+_nominatim_lock = asyncio.Lock()
+
 
 # Mapping of location names (Arabic + English) to (lat, lon).
 _LOCATIONS: dict[str, Coords] = {
@@ -121,3 +154,82 @@ def _dictionary_lookup(text: str) -> Coords | None:
         if key.lower() == matched_lower:
             return coords
     return None  # pragma: no cover — unreachable if regex and dict are in sync
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_location_candidate(text: str) -> str | None:
+    """Extract a location candidate following an Arabic preposition.
+
+    Returns up to 3 Arabic words after a known preposition, or ``None``.
+    """
+    m = _PREP_PATTERN.search(text)
+    if m is None:
+        return None
+    return m.group(1)
+
+
+async def _nominatim_geocode(candidate: str) -> Coords | None:
+    """Geocode *candidate* via Nominatim (rate-limited to 1 req/sec)."""
+    from geopy.adapters import AioHTTPAdapter
+    from geopy.geocoders import Nominatim
+
+    async with _nominatim_lock:
+        try:
+            async with Nominatim(
+                user_agent="skyfall-geoparser", adapter_factory=AioHTTPAdapter
+            ) as geolocator:
+                location = await geolocator.geocode(
+                    candidate, language="ar", timeout=5
+                )
+            if location is not None:
+                print(
+                    f"[GEOPARSE] Nominatim hit: {candidate!r} -> "
+                    f"({location.latitude}, {location.longitude})"
+                )
+                return (location.latitude, location.longitude)
+            print(f"[GEOPARSE] Nominatim miss: {candidate!r}")
+            return None
+        except Exception as exc:
+            print(f"[GEOPARSE] Nominatim error for {candidate!r}: {exc}")
+            return None
+        finally:
+            await asyncio.sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+async def geoparse(text: str) -> Coords | None:
+    """Return coordinates for a location mentioned in *text*, or ``None``.
+
+    Resolution order:
+    1. Dictionary lookup (fast, offline).
+    2. Preposition extraction + Nominatim geocoding (cached).
+    """
+    # Tier 1 — dictionary
+    coords = _dictionary_lookup(text)
+    if coords is not None:
+        print(f"[GEOPARSE] Dictionary hit for text")
+        return coords
+
+    # Tier 2 — preposition extraction + Nominatim
+    candidate = _extract_location_candidate(text)
+    if candidate is None:
+        print("[GEOPARSE] No location candidate extracted")
+        return None
+
+    # Check cache
+    if candidate in _cache:
+        print(f"[GEOPARSE] Cache hit: {candidate!r}")
+        return _cache[candidate]
+
+    # Query Nominatim
+    result = await _nominatim_geocode(candidate)
+    _cache[candidate] = result
+    return result
