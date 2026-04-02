@@ -102,21 +102,26 @@ class ObjectTracker:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def get_observations(self, object_id: str) -> list[SensorObservation]:
         """Query all observations for an object, sorted by timestamp ASC."""
-        response = await self._table.query(
-            KeyConditionExpression="pk = :pk",
-            ExpressionAttributeValues={":pk": f"object#{object_id}"},
-            ScanIndexForward=True,  # ascending sort key order
-        )
-
         observations = []
-        for item in response.get("Items", []):
-            observations.append(
-                SensorObservation(
-                    timestamp=item["timestamp"],
-                    latitude=float(item["latitude"]),
-                    longitude=float(item["longitude"]),
-                    altitude_m=float(item["altitude_m"]),
-                    noise_profile=item.get("noise_profile", "satellite"),
+        kwargs = {
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": f"object#{object_id}"},
+            "ScanIndexForward": True,
+        }
+        while True:
+            response = await self._table.query(**kwargs)
+            for item in response.get("Items", []):
+                observations.append(
+                    SensorObservation(
+                        timestamp=item["timestamp"],
+                        latitude=float(item["latitude"]),
+                        longitude=float(item["longitude"]),
+                        altitude_m=float(item["altitude_m"]),
+                        noise_profile=item.get("noise_profile", "satellite"),
+                    )
                 )
-            )
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
         return observations

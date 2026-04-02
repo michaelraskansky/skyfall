@@ -167,37 +167,43 @@ async def triage_loop(
                 observations = await tracker.get_observations(str(norad_id))
 
                 if len(observations) >= 2:
-                    logger.info(
-                        "Triggering trajectory prediction for NORAD %s (%d observations)",
-                        norad_id, len(observations),
-                    )
-                    request = TrajectoryRequest(
-                        object_id=str(norad_id),
-                        observations=observations,
-                    )
-                    predictor = DebrisTrajectoryPredictor()
-                    prediction = await asyncio.to_thread(predictor.predict, request)
+                    try:
+                        logger.info(
+                            "Triggering trajectory prediction for NORAD %s (%d observations)",
+                            norad_id, len(observations),
+                        )
+                        request = TrajectoryRequest(
+                            object_id=str(norad_id),
+                            observations=observations,
+                        )
+                        predictor = DebrisTrajectoryPredictor()
+                        prediction = await asyncio.to_thread(predictor.predict, request)
 
-                    trajectory_event = CorrelatedEvent(
-                        severity=EventSeverity.CRITICAL,
-                        classification=EventClassification.DEBRIS_REENTRY,
-                        latitude=prediction.impact_latitude,
-                        longitude=prediction.impact_longitude,
-                        contributing_events=[event],
-                        summary=(
-                            f"TRAJECTORY PREDICTION: NORAD {norad_id} "
-                            f"impact at ({prediction.impact_latitude}, {prediction.impact_longitude}) "
-                            f"in {prediction.seconds_until_impact:.0f}s, "
-                            f"terminal velocity {prediction.terminal_velocity_m_s:.0f} m/s"
-                        ),
-                        corroborating_sources=["spacetrack"],
-                        impact_prediction=prediction,
-                    )
-                    await alert_queue.put(trajectory_event)
-                    logger.info(
-                        "Trajectory prediction queued for NORAD %s: impact at (%.4f, %.4f)",
-                        norad_id, prediction.impact_latitude, prediction.impact_longitude,
-                    )
+                        trajectory_event = CorrelatedEvent(
+                            severity=EventSeverity.CRITICAL,
+                            classification=EventClassification.DEBRIS_REENTRY,
+                            latitude=prediction.impact_latitude,
+                            longitude=prediction.impact_longitude,
+                            contributing_events=[event],
+                            summary=(
+                                f"TRAJECTORY PREDICTION: NORAD {norad_id} "
+                                f"impact at ({prediction.impact_latitude}, {prediction.impact_longitude}) "
+                                f"in {prediction.seconds_until_impact:.0f}s, "
+                                f"terminal velocity {prediction.terminal_velocity_m_s:.0f} m/s"
+                            ),
+                            corroborating_sources=["spacetrack"],
+                            impact_prediction=prediction,
+                        )
+                        await alert_queue.put(trajectory_event)
+                        logger.info(
+                            "Trajectory prediction queued for NORAD %s: impact at (%.4f, %.4f)",
+                            norad_id, prediction.impact_latitude, prediction.impact_longitude,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Trajectory prediction failed for NORAD %s, will retry on next observation",
+                            norad_id, exc_info=True,
+                        )
 
         except Exception as exc:
             logger.error("Triage error for event %s: %s", event.event_id, exc, exc_info=True)
