@@ -57,10 +57,13 @@ KEYWORDS: list[str] = [
     "rocket attack",
     "shelling",
     "bombardment",
-    # Arabic
+    # Arabic (singular + plural forms)
     "انفجار",        # explosion
+    "انفجارات",      # explosions
     "صاروخ",         # missile/rocket
+    "صواريخ",        # missiles/rockets
     "غارة",          # airstrike/raid
+    "غارات",         # airstrikes
     "قصف",           # shelling/bombardment
     "حريق",          # fire
     "صافرات",        # sirens
@@ -69,6 +72,10 @@ KEYWORDS: list[str] = [
     "صاروخ باليستي",  # ballistic missile
     "دمار",          # destruction
     "اشتعال",        # ignition/blaze
+    "انطلاق",        # launch
+    "اعتراض",        # interception
+    "هجوم",          # attack
+    "ضربة",          # strike
     # Hebrew
     "פיצוץ",         # explosion
     "טיל",           # missile
