@@ -142,15 +142,22 @@ Resources:
 
   # -- Cloud Map (service discovery for API Gateway) --
   ServiceDiscoveryNamespace:
-    Type: AWS::ServiceDiscovery::HttpNamespace
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
     Properties:
-      Name: skyfall
+      Name: skyfall.local
+      Vpc: !Ref VpcId
 
   ServiceDiscoveryService:
     Type: AWS::ServiceDiscovery::Service
     Properties:
       Name: webhook
       NamespaceId: !GetAtt ServiceDiscoveryNamespace.Id
+      DnsConfig:
+        DnsRecords:
+          - Type: SRV
+            TTL: 10
+          - Type: A
+            TTL: 10
 
   # -- API Gateway HTTP API --
   VpcLink:
@@ -259,6 +266,8 @@ Resources:
             - !Ref ServiceSecurityGroup
       ServiceRegistries:
         - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
+          ContainerName: skyfall
+          ContainerPort: 80
 
 Outputs:
   WebhookEndpoint:
