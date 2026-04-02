@@ -175,10 +175,21 @@ class DebrisTrajectoryPredictor:
         self._ref_lon = obs[0].longitude
         self._ref_alt = obs[0].altitude_m
 
-        # ── 2. Initialise the EKF ────────────────────────────────────────
+        # ── 2. Auto-detect flight phase from initial altitude ────────────
+        if obs[0].altitude_m < 5000.0:
+            flight_phase = "boost"
+        else:
+            flight_phase = "ballistic"
+
+        # Resolve boost parameters (request overrides or defaults)
+        burn_time = request.burn_time_seconds if request.burn_time_seconds is not None else 60.0
+        thrust = request.thrust_to_mass_ratio if request.thrust_to_mass_ratio is not None else 25.0
+        pitch_deg = request.pitch_angle_deg if request.pitch_angle_deg is not None else 85.0
+
+        # ── 3. Initialise the EKF ────────────────────────────────────────
         self._init_ekf(obs)
 
-        # ── 3. Process each observation (predict-update cycle) ───────────
+        # ── 4. Process each observation (predict-update cycle) ───────────
         last_time = obs[0].timestamp
         for i, ob in enumerate(obs):
             if i == 0:
@@ -199,13 +210,17 @@ class DebrisTrajectoryPredictor:
 
             last_time = ob.timestamp
 
-        # ── 4. Forward-propagate until altitude ≤ 0 ─────────────────────
+        # ── 5. Forward-propagate until altitude ≤ 0 ─────────────────────
         impact_state, impact_cov, impact_dt, trajectory = self._propagate_to_impact(
             dt_step=request.propagation_dt,
             last_obs_time=last_time,
+            flight_phase=flight_phase,
+            burn_time=burn_time,
+            thrust=thrust,
+            pitch_deg=pitch_deg,
         )
 
-        # ── 5. Convert results back to geodetic ─────────────────────────
+        # ── 6. Convert results back to geodetic ─────────────────────────
         e, n, u = impact_state[0], impact_state[1], impact_state[2]
         vx, vy, vz = impact_state[3], impact_state[4], impact_state[5]
         impact_lat, impact_lon, impact_alt = enu_to_geodetic(
@@ -229,6 +244,7 @@ class DebrisTrajectoryPredictor:
             covariance_position_enu=pos_cov,
             trajectory_points=trajectory,
             filter_state_at_impact=[round(float(v), 4) for v in impact_state],
+            flight_phase_detected=flight_phase,
         )
 
     # ──────────────────────────────────────────────────────────────────────
@@ -277,10 +293,15 @@ class DebrisTrajectoryPredictor:
     # EKF Predict (nonlinear state transition)
     # ──────────────────────────────────────────────────────────────────────
 
-    def _ekf_predict(self, dt: float) -> None:
+    def _ekf_predict(
+        self,
+        dt: float,
+        thrust_enu: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> None:
         """
         Propagate the state forward by *dt* seconds using nonlinear dynamics
-        (gravity + drag), and update the covariance via the Jacobian F.
+        (gravity + drag + optional thrust), and update the covariance via
+        the Jacobian F.
 
         State transition (Euler integration):
 
@@ -291,7 +312,10 @@ class DebrisTrajectoryPredictor:
             vn' = vn + an·dt
             vu' = vu + au·dt
 
-        where a = a_gravity + a_drag.
+        where a = a_gravity + a_drag + a_thrust.
+
+        Thrust is treated as a known control input (constant w.r.t. state),
+        so it contributes to the state propagation but not to the Jacobian.
         """
         ekf = self._ekf
         x = ekf.x.copy()
@@ -302,12 +326,12 @@ class DebrisTrajectoryPredictor:
         # Current altitude in geodetic (approximate: u + ref_alt).
         alt = u + self._ref_alt
 
-        # Total acceleration = gravity + drag
+        # Total acceleration = gravity + drag + thrust
         g = gravity_acceleration()  # (0, 0, -9.81)
         d = drag_acceleration(ve, vn, vu, alt, self.beta)
-        ae = g[0] + d[0]
-        an = g[1] + d[1]
-        au = g[2] + d[2]
+        ae = g[0] + d[0] + thrust_enu[0]
+        an = g[1] + d[1] + thrust_enu[1]
+        au = g[2] + d[2] + thrust_enu[2]
 
         # --- Propagate state (Euler) ---
         x_new = np.array([
@@ -407,15 +431,51 @@ class DebrisTrajectoryPredictor:
     # Forward propagation to ground impact
     # ──────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _compute_thrust_enu(
+        ve: float, vn: float, thrust: float, pitch_deg: float,
+    ) -> Tuple[float, float, float]:
+        """
+        Decompose thrust into ENU components using pitch angle and heading.
+
+        The pitch angle is measured from the local horizontal (90° = straight
+        up, 0° = horizontal).  The horizontal component is applied along
+        the current heading (horizontal velocity direction).
+
+        Zero-velocity safeguard: if horizontal speed < 0.1 m/s, heading
+        defaults to due east (1, 0).
+        """
+        pitch_rad = math.radians(pitch_deg)
+        horiz_speed = math.sqrt(ve ** 2 + vn ** 2)
+        if horiz_speed < 0.1:
+            heading_e, heading_n = 1.0, 0.0
+        else:
+            heading_e = ve / horiz_speed
+            heading_n = vn / horiz_speed
+
+        thrust_e = thrust * math.cos(pitch_rad) * heading_e
+        thrust_n = thrust * math.cos(pitch_rad) * heading_n
+        thrust_u = thrust * math.sin(pitch_rad)
+        return (thrust_e, thrust_n, thrust_u)
+
     def _propagate_to_impact(
         self,
         dt_step: float,
         last_obs_time: datetime,
         max_propagation_sec: float = 3600.0,
+        flight_phase: str = "ballistic",
+        burn_time: float = 60.0,
+        thrust: float = 25.0,
+        pitch_deg: float = 85.0,
     ) -> Tuple[np.ndarray, np.ndarray, float, List[dict]]:
         """
         Propagate the filtered state forward in time until altitude ≤ 0
         or the maximum propagation time is exceeded.
+
+        Supports two flight phases:
+        - **boost**: thrust is applied along the pitch-biased heading until
+          ``burn_time`` seconds have elapsed, then transitions to ballistic.
+        - **ballistic**: gravity + drag only (existing behavior).
 
         When the altitude crosses zero between two steps, a bisection
         refinement narrows the impact moment to within 0.01 s, preventing
@@ -431,6 +491,7 @@ class DebrisTrajectoryPredictor:
         ekf = self._ekf
         elapsed = 0.0
         trajectory: List[dict] = []
+        current_phase = flight_phase
 
         # Sample trajectory for visualization every N steps.
         sample_interval = max(1, int(10.0 / dt_step))
@@ -438,6 +499,7 @@ class DebrisTrajectoryPredictor:
 
         while elapsed < max_propagation_sec:
             alt = ekf.x[2] + self._ref_alt
+            vu = float(ekf.x[5])  # vertical velocity
 
             # Record trajectory waypoint periodically.
             if step_count % sample_interval == 0:
@@ -454,11 +516,30 @@ class DebrisTrajectoryPredictor:
                 })
 
             # Check termination: altitude ≤ 0.
-            if alt <= 0 and elapsed > 0:
+            # During boost or while ascending, do NOT terminate on ground
+            # contact — the object is going up.  Only terminate when
+            # ballistic AND descending (vu < 0).
+            can_terminate = (current_phase == "ballistic" and vu < 0)
+            if alt <= 0 and elapsed > 0 and can_terminate:
                 logger.info(
                     "Impact predicted at t+%.1f s, alt=%.0f m", elapsed, alt
                 )
                 break
+
+            # ── Phase transition: boost → ballistic ──────────────────────
+            if current_phase == "boost" and elapsed >= burn_time:
+                current_phase = "ballistic"
+                logger.info(
+                    "Phase transition: boost → ballistic at t+%.1f s, alt=%.0f m",
+                    elapsed, alt,
+                )
+
+            # ── Compute thrust for this step ─────────────────────────────
+            if current_phase == "boost":
+                ve, vn = float(ekf.x[3]), float(ekf.x[4])
+                thrust_enu = self._compute_thrust_enu(ve, vn, thrust, pitch_deg)
+            else:
+                thrust_enu = (0.0, 0.0, 0.0)
 
             # Save pre-step state for bisection if needed.
             prev_x = ekf.x.copy()
@@ -466,16 +547,17 @@ class DebrisTrajectoryPredictor:
             prev_alt = alt
 
             # Propagate one step.
-            self._ekf_predict(dt_step)
+            self._ekf_predict(dt_step, thrust_enu=thrust_enu)
             elapsed += dt_step
             step_count += 1
 
             new_alt = ekf.x[2] + self._ref_alt
+            new_vu = float(ekf.x[5])
 
             # ── Bisection refinement when altitude crosses zero ──────────
-            # If we went from positive to negative in one step, roll back
-            # and use bisection to find the precise crossing.
-            if prev_alt > 0 and new_alt <= 0:
+            # Only bisect when in ballistic phase and descending.
+            can_bisect = (current_phase == "ballistic" and new_vu < 0)
+            if prev_alt > 0 and new_alt <= 0 and can_bisect:
                 ekf.x = prev_x
                 ekf.P = prev_P
                 elapsed -= dt_step
