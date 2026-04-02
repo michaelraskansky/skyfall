@@ -8,6 +8,7 @@ payload suitable for webhook delivery (Slack, Discord, PagerDuty, etc.).
 
 from __future__ import annotations
 
+import math
 from datetime import timezone
 
 from models import CorrelatedEvent
@@ -52,6 +53,34 @@ def format_alert_payload(event: CorrelatedEvent) -> dict:
             "confidence_score": event.llm_analysis.confidence_score,
         }
 
+    impact_block = None
+    if event.impact_prediction:
+        ip = event.impact_prediction
+        # Compute 95% confidence ellipse semi-axes from the 2x2 horizontal covariance
+        cov_ee = ip.covariance_position_enu[0][0]
+        cov_en = ip.covariance_position_enu[0][1]
+        cov_nn = ip.covariance_position_enu[1][1]
+        trace = cov_ee + cov_nn
+        det = cov_ee * cov_nn - cov_en * cov_en
+        discriminant = max((trace / 2) ** 2 - det, 0)
+        lam1 = trace / 2 + math.sqrt(discriminant)
+        lam2 = trace / 2 - math.sqrt(discriminant)
+        semi_major = 2.0 * math.sqrt(max(lam1, 0))  # 95% ≈ 2σ
+        semi_minor = 2.0 * math.sqrt(max(lam2, 0))
+
+        impact_block = {
+            "object_id": ip.object_id,
+            "impact_latitude": ip.impact_latitude,
+            "impact_longitude": ip.impact_longitude,
+            "time_of_impact_utc": ip.time_of_impact_utc.isoformat(),
+            "seconds_until_impact": ip.seconds_until_impact,
+            "terminal_velocity_m_s": ip.terminal_velocity_m_s,
+            "confidence_ellipse_95pct_m": {
+                "semi_major": round(semi_major, 1),
+                "semi_minor": round(semi_minor, 1),
+            },
+        }
+
     return {
         "alert": {
             "correlation_id": event.correlation_id,
@@ -67,5 +96,6 @@ def format_alert_payload(event: CorrelatedEvent) -> dict:
             "corroborating_sources": event.corroborating_sources,
             "llm_analysis": llm_block,
             "contributing_events": contributing_summaries,
+            "impact_prediction": impact_block,
         }
     }

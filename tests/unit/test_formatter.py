@@ -11,6 +11,25 @@ from models import (
     RawEvent,
 )
 from output.formatter import format_alert_payload
+from trajectory.models import ImpactPrediction
+
+
+def _make_impact_prediction() -> ImpactPrediction:
+    """Build a minimal ImpactPrediction for testing."""
+    return ImpactPrediction(
+        object_id="99999",
+        impact_latitude=35.123,
+        impact_longitude=-115.456,
+        impact_altitude_m=0.0,
+        time_of_impact_utc=datetime(2026, 4, 1, 15, 0, 0, tzinfo=timezone.utc),
+        seconds_until_impact=120.0,
+        terminal_velocity_m_s=250.5,
+        covariance_position_enu=[
+            [40000.0, 100.0, 0.0],
+            [100.0, 35000.0, 0.0],
+            [0.0, 0.0, 90000.0],
+        ],
+    )
 
 
 def _make_correlated_event(
@@ -124,3 +143,33 @@ class TestFormatAlertPayload:
         alert = format_alert_payload(event)["alert"]
         assert alert["contributing_events"][0]["source"] == "firms"
         assert alert["contributing_events"][1]["source"] == "adsb"
+
+    def test_impact_prediction_included_when_present(self):
+        event = _make_correlated_event()
+        event.impact_prediction = _make_impact_prediction()
+        alert = format_alert_payload(event)["alert"]
+        ip = alert["impact_prediction"]
+        assert ip is not None
+        assert ip["object_id"] == "99999"
+        assert ip["impact_latitude"] == 35.123
+        assert ip["impact_longitude"] == -115.456
+        assert ip["terminal_velocity_m_s"] == 250.5
+        assert ip["seconds_until_impact"] == 120.0
+
+    def test_impact_prediction_has_confidence_ellipse(self):
+        event = _make_correlated_event()
+        event.impact_prediction = _make_impact_prediction()
+        alert = format_alert_payload(event)["alert"]
+        ip = alert["impact_prediction"]
+        assert "confidence_ellipse_95pct_m" in ip
+        ellipse = ip["confidence_ellipse_95pct_m"]
+        assert "semi_major" in ellipse
+        assert "semi_minor" in ellipse
+        assert ellipse["semi_major"] > 0
+        assert ellipse["semi_minor"] > 0
+
+    def test_no_impact_prediction_when_absent(self):
+        event = _make_correlated_event()
+        assert event.impact_prediction is None
+        alert = format_alert_payload(event)["alert"]
+        assert alert.get("impact_prediction") is None
