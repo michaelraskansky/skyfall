@@ -3,9 +3,13 @@
 Mock Trajectory Injector
 =========================
 
-Generates 4 synthetic TIP observations for a fake NORAD_CAT_ID and
-POSTs them to the local /api/v1/test-event endpoint with a 2-second
-delay between each.
+Simulates a realistic re-entry detection scenario:
+
+1. Injects a Space-Track TIP alert (seeds the object tracker, but does NOT
+   trigger the EKF — TIPs are predictions, not sensor observations).
+2. Injects 3 synthetic sensor observations (FIRMS thermal) that simulate
+   ground-based detection of the re-entering object.  These DO trigger the
+   EKF once ≥2 non-TIP observations are present.
 
 Usage::
 
@@ -33,18 +37,20 @@ V_LON = -0.003   # deg/s westward
 V_ALT = -800.0   # m/s downward
 
 OFFSETS_SEC = [0, 25, 55, 90]
-NOISE_PROFILES = ["satellite", "thermal", "social_media", "thermal"]
+
+# Observation 0 = TIP (spacetrack), observations 1-3 = sensor (firms)
+SOURCES = ["spacetrack", "firms", "firms", "firms"]
+NOISE_PROFILES = ["satellite", "thermal", "thermal", "thermal"]
 
 # Noise standard deviations per profile (lat_deg, lon_deg, alt_m)
 NOISE_SIGMA = {
     "satellite":    (0.002, 0.002, 400),
     "thermal":      (0.008, 0.008, 1500),
-    "social_media": (0.020, 0.020, 4000),
 }
 
 
 def generate_observations() -> list[dict]:
-    """Generate 4 noisy synthetic TIP observations."""
+    """Generate 1 TIP + 3 sensor observations along a re-entry trajectory."""
     random.seed(42)
     base_time = datetime.now(timezone.utc) - timedelta(seconds=max(OFFSETS_SEC))
     observations = []
@@ -56,30 +62,35 @@ def generate_observations() -> list[dict]:
         true_alt = max(true_alt, 0)
 
         profile = NOISE_PROFILES[i]
-        sigma = NOISE_SIGMA[profile]
+        sigma = NOISE_SIGMA.get(profile, NOISE_SIGMA["thermal"])
         noisy_lat = round(true_lat + random.gauss(0, sigma[0]), 6)
         noisy_lon = round(true_lon + random.gauss(0, sigma[1]), 6)
         noisy_alt = round(max(true_alt + random.gauss(0, sigma[2]), 500.0), 1)
 
         ts = base_time + timedelta(seconds=t)
-        observations.append({
-            "source": "spacetrack",
+        source = SOURCES[i]
+
+        obs = {
+            "source": source,
             "latitude": noisy_lat,
             "longitude": noisy_lon,
             "description": (
-                f"TIP: NORAD {NORAD_CAT_ID} re-entry predicted "
-                f"{ts.isoformat()} UTC @ ({noisy_lat}, {noisy_lon})"
+                f"{'TIP' if source == 'spacetrack' else 'FIRMS thermal'}: "
+                f"NORAD {NORAD_CAT_ID} @ ({noisy_lat}, {noisy_lon})"
             ),
             "NORAD_CAT_ID": NORAD_CAT_ID,
             "LAT": str(noisy_lat),
             "LON": str(noisy_lon),
             "ALTITUDE_M": str(noisy_alt),
-            "DECAY_EPOCH": ts.isoformat(),
-            "MSG_EPOCH": ts.strftime("%Y-%m-%d %H:%M:%S"),
-            "WINDOW": "5",
-            "HIGH_INTEREST": "Y",
-            "timestamp": ts.isoformat(),
-        })
+        }
+
+        if source == "spacetrack":
+            obs["DECAY_EPOCH"] = ts.isoformat()
+            obs["MSG_EPOCH"] = ts.strftime("%Y-%m-%d %H:%M:%S")
+            obs["WINDOW"] = "5"
+            obs["HIGH_INTEREST"] = "Y"
+
+        observations.append(obs)
 
     return observations
 
@@ -90,7 +101,7 @@ def main() -> None:
     print("=" * 60)
     print(f"\n  Target:   {ENDPOINT}")
     print(f"  Object:   NORAD {NORAD_CAT_ID}")
-    print(f"  Points:   {len(OFFSETS_SEC)} observations")
+    print(f"  Scenario: 1 TIP alert + 3 FIRMS sensor observations")
     print(f"  Delay:    2s between each POST\n")
 
     # Check health first
@@ -105,9 +116,10 @@ def main() -> None:
     observations = generate_observations()
 
     for i, obs in enumerate(observations):
-        print(f"── Observation {i + 1}/{len(observations)} ──")
-        print(f"  lat={obs['latitude']}, lon={obs['longitude']}, alt={obs['ALTITUDE_M']}m")
-        print(f"  timestamp={obs['timestamp']}")
+        source = obs["source"]
+        label = "TIP (no EKF trigger)" if source == "spacetrack" else "FIRMS sensor"
+        print(f"── Observation {i + 1}/{len(observations)} [{label}] ──")
+        print(f"  source={source}, lat={obs['latitude']}, lon={obs['longitude']}, alt={obs.get('ALTITUDE_M', '?')}m")
         print(f"  POSTing to {ENDPOINT}...")
 
         resp = httpx.post(ENDPOINT, json=obs, timeout=10.0)
@@ -121,7 +133,9 @@ def main() -> None:
 
     print("=" * 60)
     print("  All observations injected.")
-    print("  Check your Slack/Discord for impact prediction alerts.")
+    print("  Expected: No EKF on obs 1 (TIP) or 2 (only 1 sensor).")
+    print("  EKF triggers on obs 3 (2 sensors) and 4 (3 sensors).")
+    print("  Check Slack/Discord for impact prediction alerts.")
     print("=" * 60)
 
 

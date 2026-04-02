@@ -164,7 +164,15 @@ async def triage_loop(
             norad_id = event.raw_payload.get("NORAD_CAT_ID")
             if norad_id:
                 await tracker.track_observation(event)
-                observations = await tracker.get_observations(str(norad_id))
+
+                # Only trigger the EKF on real sensor observations (FIRMS,
+                # ADS-B, social media), not TIP predictions.  TIP messages
+                # are revised predictions of a future position, not actual
+                # observations of where the object is now — feeding them
+                # into the EKF produces nonsensical velocities.
+                observations = await tracker.get_observations(
+                    str(norad_id), exclude_source="spacetrack",
+                )
 
                 if len(observations) >= 2:
                     try:

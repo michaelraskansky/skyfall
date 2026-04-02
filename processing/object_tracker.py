@@ -116,8 +116,19 @@ class ObjectTracker:
         )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def get_observations(self, object_id: str) -> list[SensorObservation]:
-        """Query all observations for an object, sorted by timestamp ASC."""
+    async def get_observations(
+        self, object_id: str, exclude_source: str | None = None,
+    ) -> list[SensorObservation]:
+        """Query all observations for an object, sorted by timestamp ASC.
+
+        Parameters
+        ----------
+        object_id : str
+            The NORAD_CAT_ID to query.
+        exclude_source : str, optional
+            If set, skip items whose ``source`` matches this value.
+            Use ``"spacetrack"`` to get only real sensor observations.
+        """
         observations = []
         kwargs = {
             "KeyConditionExpression": "pk = :pk",
@@ -127,6 +138,8 @@ class ObjectTracker:
         while True:
             response = await self._table.query(**kwargs)
             for item in response.get("Items", []):
+                if exclude_source and item.get("source") == exclude_source:
+                    continue
                 observations.append(
                     SensorObservation(
                         timestamp=item["timestamp"],
