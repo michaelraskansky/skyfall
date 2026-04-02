@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+from ingestion.satcat_lookup import SatcatInfo
 from models import (
     CorrelatedEvent,
     EventClassification,
@@ -173,3 +174,28 @@ class TestFormatAlertPayload:
         assert event.impact_prediction is None
         alert = format_alert_payload(event)["alert"]
         assert alert.get("impact_prediction") is None
+
+    def test_object_info_included_when_satcat_present(self):
+        event = _make_correlated_event()
+        event.satcat_info = SatcatInfo(
+            norad_cat_id="53493",
+            object_name="STARLINK-4361",
+            country="US",
+            launch_date="2022-08-12",
+            object_type="PAYLOAD",
+            rcs_size="LARGE",
+        )
+        alert = format_alert_payload(event)["alert"]
+        oi = alert["object_info"]
+        assert oi is not None
+        assert oi["object_name"] == "STARLINK-4361"
+        assert oi["country"] == "US"
+        assert oi["launch_date"] == "2022-08-12"
+        assert oi["object_type"] == "PAYLOAD"
+        assert oi["norad_cat_id"] == "53493"
+
+    def test_no_object_info_when_satcat_absent(self):
+        event = _make_correlated_event()
+        assert event.satcat_info is None
+        alert = format_alert_payload(event)["alert"]
+        assert alert.get("object_info") is None
