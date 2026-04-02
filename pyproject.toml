@@ -19,6 +19,8 @@ dependencies = [
     "structlog>=24.1.0",
     "tenacity>=8.2.0",
     "telethon>=1.36.0",
+    "staticmap>=0.5.7",
+    "slack_sdk>=3.27.0",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["ingestion", "processing", "output", "trajectory"]
+packages = ["ingestion", "processing", "output", "trajectory", "visuals"]
 
 [build-system]
 requires = ["hatchling"]
