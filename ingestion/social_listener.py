@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # ── Keywords / patterns that suggest an anomalous event ───────────────────────
 # Case-insensitive.  Extend as needed.
 KEYWORDS: list[str] = [
+    # English
     "sonic boom",
     "bright flash",
     "fireball",
@@ -50,6 +51,32 @@ KEYWORDS: list[str] = [
     "re-entry",
     "reentry",
     "sky lit up",
+    "missile",
+    "airstrike",
+    "air strike",
+    "rocket attack",
+    "shelling",
+    "bombardment",
+    # Arabic
+    "انفجار",        # explosion
+    "صاروخ",         # missile/rocket
+    "غارة",          # airstrike/raid
+    "قصف",           # shelling/bombardment
+    "حريق",          # fire
+    "صافرات",        # sirens
+    "كرة نار",       # fireball
+    "حطام",          # debris
+    "صاروخ باليستي",  # ballistic missile
+    "دمار",          # destruction
+    "اشتعال",        # ignition/blaze
+    # Hebrew
+    "פיצוץ",         # explosion
+    "טיל",           # missile
+    "רקטה",          # rocket
+    "תקיפה",         # strike/attack
+    "אזעקה",         # alarm/siren
+    "שריפה",         # fire
+    "הפצצה",         # bombardment
 ]
 
 _KEYWORD_PATTERN = re.compile(
