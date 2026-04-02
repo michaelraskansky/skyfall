@@ -136,10 +136,12 @@ class DebrisTrajectoryPredictor:
         ballistic_coefficient: float = 50.0,
         process_noise_std_pos: float = 50.0,
         process_noise_std_vel: float = 10.0,
+        terminal_q_multiplier: float = 10.0,
     ) -> None:
         self.beta: float = ballistic_coefficient
         self.q_pos: float = process_noise_std_pos
         self.q_vel: float = process_noise_std_vel
+        self.terminal_q_multiplier: float = terminal_q_multiplier
 
         # ENU reference origin – set from the first observation.
         self._ref_lat: Optional[float] = None
@@ -297,6 +299,7 @@ class DebrisTrajectoryPredictor:
         self,
         dt: float,
         thrust_enu: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        q_scale: float = 1.0,
     ) -> None:
         """
         Propagate the state forward by *dt* seconds using nonlinear dynamics
@@ -377,7 +380,7 @@ class DebrisTrajectoryPredictor:
             F[0:3, 3:6] = np.eye(3) * dt + 0.5 * da_dv * dt ** 2
 
         # --- Process noise Q (continuous white noise acceleration model) ---
-        Q = self._make_Q(dt)
+        Q = self._make_Q(dt, q_scale=q_scale)
 
         # --- Covariance propagation: P' = F P F^T + Q ---
         ekf.P = F @ ekf.P @ F.T + Q
@@ -580,13 +583,23 @@ class DebrisTrajectoryPredictor:
             else:
                 thrust_enu = (0.0, 0.0, 0.0)
 
+            # ── Terminal Q-matrix inflation ────────────────────────────────
+            # Below 30 km during ballistic descent, inflate process noise
+            # to reflect terminal maneuver / turbulence uncertainty.
+            _TERMINAL_ALT = 30_000.0
+            q_scale = 1.0
+            if current_phase == "ballistic" and alt < _TERMINAL_ALT and vu < 0:
+                q_scale = 1.0 + (self.terminal_q_multiplier - 1.0) * (
+                    1.0 - alt / _TERMINAL_ALT
+                )
+
             # Save pre-step state for bisection if needed.
             prev_x = ekf.x.copy()
             prev_P = ekf.P.copy()
             prev_alt = alt
 
             # Propagate one step.
-            self._ekf_predict(dt_step, thrust_enu=thrust_enu)
+            self._ekf_predict(dt_step, thrust_enu=thrust_enu, q_scale=q_scale)
             elapsed += dt_step
             step_count += 1
 
@@ -647,9 +660,17 @@ class DebrisTrajectoryPredictor:
             self._ref_lat, self._ref_lon, self._ref_alt,
         )
 
-    def _make_Q(self, dt: float) -> np.ndarray:
+    def _make_Q(self, dt: float, q_scale: float = 1.0) -> np.ndarray:
         """
         Build the 6×6 process-noise covariance matrix for time step *dt*.
+
+        Parameters
+        ----------
+        dt : float
+            Time step in seconds.
+        q_scale : float
+            Multiplier for process noise.  Used for terminal maneuver
+            uncertainty inflation (q_scale > 1 widens the covariance).
 
         Uses the piece-wise constant white-noise acceleration model:
 
@@ -665,8 +686,8 @@ class DebrisTrajectoryPredictor:
                  [0      dt    0   ]
                  [0      0     dt  ]]
         """
-        q_p = self.q_pos ** 2
-        q_v = self.q_vel ** 2
+        q_p = self.q_pos ** 2 * q_scale
+        q_v = self.q_vel ** 2 * q_scale
 
         # Simplified block-diagonal Q:
         #   Position block: σ_pos² · dt  (random walk)

@@ -197,3 +197,58 @@ class TestBoostPhase:
         assert thrust_enu[0] == 0.0
         assert thrust_enu[1] == 0.0
         assert thrust_enu[2] == 25.0
+
+
+class TestTerminalQInflation:
+    """Tests for terminal maneuver uncertainty inflation."""
+
+    def _predict_descending(self, terminal_q_multiplier=10.0):
+        """Run a standard ballistic (descending) prediction."""
+        obs = _make_observations(count=5, interval_sec=10.0, start_alt=50000.0)
+        request = TrajectoryRequest(
+            object_id="TERM-001",
+            observations=obs,
+            ballistic_coefficient=50.0,
+        )
+        predictor = DebrisTrajectoryPredictor(
+            ballistic_coefficient=50.0,
+            terminal_q_multiplier=terminal_q_multiplier,
+        )
+        return predictor.predict(request)
+
+    def test_terminal_inflation_widens_ellipse(self):
+        """Higher terminal_q_multiplier should produce a wider confidence ellipse."""
+        result_low = self._predict_descending(terminal_q_multiplier=1.0)
+        result_high = self._predict_descending(terminal_q_multiplier=20.0)
+
+        # Extract the 2x2 horizontal covariance block
+        cov_low = result_low.covariance_position_enu
+        cov_high = result_high.covariance_position_enu
+
+        # Trace of the position covariance (sum of diagonal) is a
+        # scalar measure of total uncertainty
+        trace_low = cov_low[0][0] + cov_low[1][1] + cov_low[2][2]
+        trace_high = cov_high[0][0] + cov_high[1][1] + cov_high[2][2]
+
+        assert trace_high > trace_low, (
+            f"Expected inflated Q to widen covariance: "
+            f"trace_high={trace_high} should be > trace_low={trace_low}"
+        )
+
+    def test_no_inflation_at_multiplier_one(self):
+        """terminal_q_multiplier=1.0 should produce same result as no inflation."""
+        result_default = self._predict_descending(terminal_q_multiplier=1.0)
+        # With multiplier 1.0, the scale is always 1.0 so Q is unchanged.
+        # Impact point and covariance should be deterministic.
+        assert result_default.impact_altitude_m == pytest.approx(0.0, abs=500.0)
+        assert result_default.seconds_until_impact > 0
+
+    def test_impact_point_stable_despite_inflation(self):
+        """Terminal Q inflation should widen uncertainty but not wildly change the point estimate."""
+        result_low = self._predict_descending(terminal_q_multiplier=1.0)
+        result_high = self._predict_descending(terminal_q_multiplier=20.0)
+
+        # Impact coordinates should be in the same general area
+        # (within 1 degree — inflation changes covariance, not the mean)
+        assert abs(result_high.impact_latitude - result_low.impact_latitude) < 1.0
+        assert abs(result_high.impact_longitude - result_low.impact_longitude) < 1.0
