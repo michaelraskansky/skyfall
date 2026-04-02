@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import httpx
@@ -28,6 +29,10 @@ from models import CorrelatedEvent, EventSeverity
 from output.formatter import format_alert_payload
 
 logger = logging.getLogger(__name__)
+
+# Rate-limit state for Slack map uploads (min 5s between uploads)
+_last_map_upload_ts: float = 0.0
+_MAP_UPLOAD_COOLDOWN_SEC: float = 5.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -208,6 +213,48 @@ async def _post_discord(client: httpx.AsyncClient, payload: dict) -> None:
     resp = await client.post(url, json=discord_body)
     resp.raise_for_status()
     logger.info("Discord alert sent for %s", payload["alert"]["correlation_id"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Slack map upload (Bot API — separate from webhook text alerts)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def upload_slack_map(file_path: str, caption: str) -> None:
+    """
+    Upload a ground track map PNG to Slack via the Bot API.
+
+    Requires ``slack_bot_token`` and ``slack_channel_id`` in settings.
+    Rate-limited to one upload per 5 seconds to respect Slack API limits.
+    Silently skips if credentials are missing or cooldown hasn't elapsed.
+    """
+    global _last_map_upload_ts
+
+    token = settings.slack_bot_token
+    channel = settings.slack_channel_id
+    if not token or not channel:
+        return
+
+    # Rate-limit: skip if too soon after last upload
+    now = time.monotonic()
+    if now - _last_map_upload_ts < _MAP_UPLOAD_COOLDOWN_SEC:
+        logger.debug("Slack map upload skipped (rate limit cooldown)")
+        return
+
+    try:
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=token)
+        await client.files_upload_v2(
+            file=file_path,
+            channel=channel,
+            title="Ground Track Map",
+            initial_comment=caption,
+        )
+        _last_map_upload_ts = time.monotonic()
+        logger.info("Slack map uploaded to channel %s", channel)
+    except Exception:
+        logger.exception("Slack map upload failed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

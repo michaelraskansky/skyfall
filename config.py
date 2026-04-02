@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     # -- Alerting --
     slack_webhook_url: str = ""
+    slack_bot_token: str = ""       # xoxb-... for file uploads (maps)
+    slack_channel_id: str = ""      # Channel ID for map uploads
     discord_webhook_url: str = ""
 
     # -- Logging --

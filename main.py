@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import signal
 import sys
@@ -68,9 +69,11 @@ from ingestion.satcat_lookup import SatcatLookup
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
+from output.alerter import upload_slack_map
 from processing.object_tracker import ObjectTracker
 from trajectory.models import TrajectoryRequest
 from trajectory.predictor import DebrisTrajectoryPredictor
+from visuals.map_generator import render_ground_track
 from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
 from processing.llm_parser import parse_with_llm, close_client as close_llm_client
@@ -218,6 +221,31 @@ async def triage_loop(
                             "Trajectory prediction queued for %s: impact at (%.4f, %.4f)",
                             obj_label, prediction.impact_latitude, prediction.impact_longitude,
                         )
+
+                        # Generate and upload ground track map (non-blocking)
+                        if prediction.trajectory_points:
+                            try:
+                                map_path = await asyncio.to_thread(
+                                    render_ground_track, prediction, sat_info,
+                                )
+                                ellipse = prediction.covariance_position_enu
+                                cov_ee, cov_en, cov_nn = ellipse[0][0], ellipse[0][1], ellipse[1][1]
+                                tr = cov_ee + cov_nn
+                                det = cov_ee * cov_nn - cov_en ** 2
+                                disc = max((tr / 2) ** 2 - det, 0)
+                                sm = 2.0 * math.sqrt(max(tr / 2 + math.sqrt(disc), 0))
+                                sn = 2.0 * math.sqrt(max(tr / 2 - math.sqrt(disc), 0))
+                                caption = (
+                                    f"Ground Track: {obj_label}\n"
+                                    f"Impact: ({prediction.impact_latitude}, {prediction.impact_longitude}) "
+                                    f"| ETA: {prediction.seconds_until_impact:.0f}s "
+                                    f"| Terminal: {prediction.terminal_velocity_m_s:.0f} m/s\n"
+                                    f"95% ellipse: {sm / 1000:.1f}km x {sn / 1000:.1f}km"
+                                )
+                                await upload_slack_map(map_path, caption)
+                                os.unlink(map_path)
+                            except Exception:
+                                logger.warning("Map generation/upload failed for %s", obj_label, exc_info=True)
                     except Exception:
                         logger.warning(
                             "Trajectory prediction failed for NORAD %s, will retry on next observation",
