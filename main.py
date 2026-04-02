@@ -66,7 +66,10 @@ from ingestion.emergency_webhook import app as webhook_app, set_event_queue
 from ingestion.firms_poller import poll_firms
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
-from models import CorrelatedEvent, EventSource, RawEvent
+from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
+from processing.object_tracker import ObjectTracker
+from trajectory.models import TrajectoryRequest
+from trajectory.predictor import DebrisTrajectoryPredictor
 from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
 from processing.llm_parser import parse_with_llm, close_client as close_llm_client
@@ -99,6 +102,7 @@ async def triage_loop(
     raw_queue: asyncio.Queue[RawEvent],
     alert_queue: asyncio.Queue[CorrelatedEvent],
     engine: CorrelationEngine,
+    tracker: ObjectTracker,
 ) -> None:
     """
     Continuously dequeue raw sensor events, triage them through the LLM
@@ -156,6 +160,45 @@ async def triage_loop(
                 )
                 await engine.try_correlate(event, synthetic, output_queue=alert_queue)
 
+            # ── Trajectory tracking for objects with NORAD_CAT_ID ────────
+            norad_id = event.raw_payload.get("NORAD_CAT_ID")
+            if norad_id:
+                await tracker.track_observation(event)
+                observations = await tracker.get_observations(str(norad_id))
+
+                if len(observations) >= 2:
+                    logger.info(
+                        "Triggering trajectory prediction for NORAD %s (%d observations)",
+                        norad_id, len(observations),
+                    )
+                    request = TrajectoryRequest(
+                        object_id=str(norad_id),
+                        observations=observations,
+                    )
+                    predictor = DebrisTrajectoryPredictor()
+                    prediction = await asyncio.to_thread(predictor.predict, request)
+
+                    trajectory_event = CorrelatedEvent(
+                        severity=EventSeverity.CRITICAL,
+                        classification=EventClassification.DEBRIS_REENTRY,
+                        latitude=prediction.impact_latitude,
+                        longitude=prediction.impact_longitude,
+                        contributing_events=[event],
+                        summary=(
+                            f"TRAJECTORY PREDICTION: NORAD {norad_id} "
+                            f"impact at ({prediction.impact_latitude}, {prediction.impact_longitude}) "
+                            f"in {prediction.seconds_until_impact:.0f}s, "
+                            f"terminal velocity {prediction.terminal_velocity_m_s:.0f} m/s"
+                        ),
+                        corroborating_sources=["spacetrack"],
+                        impact_prediction=prediction,
+                    )
+                    await alert_queue.put(trajectory_event)
+                    logger.info(
+                        "Trajectory prediction queued for NORAD %s: impact at (%.4f, %.4f)",
+                        norad_id, prediction.impact_latitude, prediction.impact_longitude,
+                    )
+
         except Exception as exc:
             logger.error("Triage error for event %s: %s", event.event_id, exc, exc_info=True)
         finally:
@@ -195,6 +238,9 @@ async def main() -> None:
     engine = CorrelationEngine()
     await engine.connect()
 
+    tracker = ObjectTracker()
+    await tracker.connect()
+
     tasks = [
         asyncio.create_task(poll_firms(raw_queue), name="firms_poller"),
         asyncio.create_task(poll_adsb(raw_queue), name="adsb_poller"),
@@ -202,7 +248,7 @@ async def main() -> None:
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
         asyncio.create_task(poll_spacetrack(raw_queue), name="spacetrack_poller"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
-        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine), name="triage"),
+        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),
     ]
 
@@ -242,6 +288,7 @@ async def main() -> None:
         logger.warning("Queue drain timed out")
 
     await engine.close()
+    await tracker.close()
     await close_llm_client()
     logger.info("Shutdown complete")
 
