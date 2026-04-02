@@ -51,43 +51,64 @@ async def _post_slack(client: httpx.AsyncClient, payload: dict) -> None:
     summary = payload["alert"]["summary"]
     severity = payload["alert"]["severity"]
 
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"{severity}: {payload['alert']['classification']}",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": summary,
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Correlation ID:* `{payload['alert']['correlation_id']}`\n"
+                    f"*Sources:* {', '.join(payload['alert']['corroborating_sources'])}\n"
+                    f"*Coordinates:* {payload['alert'].get('coordinates', 'N/A')}\n"
+                    f"*Timestamp:* {payload['alert']['timestamp_utc']}"
+                ),
+            },
+        },
+    ]
+
+    ip = payload["alert"].get("impact_prediction")
+    if ip:
+        ellipse = ip.get("confidence_ellipse_95pct_m", {})
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f":dart: *Impact Prediction*\n"
+                    f"*Object:* `{ip['object_id']}`\n"
+                    f"*Impact:* ({ip['impact_latitude']}, {ip['impact_longitude']})\n"
+                    f"*ETA:* {ip['seconds_until_impact']:.0f}s ({ip['time_of_impact_utc']})\n"
+                    f"*Terminal velocity:* {ip['terminal_velocity_m_s']:.0f} m/s\n"
+                    f"*95% ellipse:* {ellipse.get('semi_major', '?')}m x {ellipse.get('semi_minor', '?')}m"
+                ),
+            },
+        })
+
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"```{json.dumps(payload, indent=2, default=str)[:2900]}```",
+        },
+    })
+
     slack_body = {
         "text": f":rotating_light: *{severity} ALERT* :rotating_light:\n{summary}",
-        "blocks": [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": f"{severity}: {payload['alert']['classification']}",
-                },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": summary,
-                },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"*Correlation ID:* `{payload['alert']['correlation_id']}`\n"
-                        f"*Sources:* {', '.join(payload['alert']['corroborating_sources'])}\n"
-                        f"*Coordinates:* {payload['alert'].get('coordinates', 'N/A')}\n"
-                        f"*Timestamp:* {payload['alert']['timestamp_utc']}"
-                    ),
-                },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"```{json.dumps(payload, indent=2, default=str)[:2900]}```",
-                },
-            },
-        ],
+        "blocks": blocks,
     }
 
     resp = await client.post(url, json=slack_body)
@@ -109,6 +130,43 @@ async def _post_discord(client: httpx.AsyncClient, payload: dict) -> None:
     summary = payload["alert"]["summary"]
     severity = payload["alert"]["severity"]
 
+    fields = [
+        {
+            "name": "Correlation ID",
+            "value": f"`{payload['alert']['correlation_id']}`",
+            "inline": True,
+        },
+        {
+            "name": "Sources",
+            "value": ", ".join(payload["alert"]["corroborating_sources"]),
+            "inline": True,
+        },
+        {
+            "name": "Coordinates",
+            "value": str(payload["alert"].get("coordinates", "N/A")),
+            "inline": True,
+        },
+    ]
+
+    ip = payload["alert"].get("impact_prediction")
+    if ip:
+        ellipse = ip.get("confidence_ellipse_95pct_m", {})
+        fields.append({
+            "name": "Impact Prediction",
+            "value": (
+                f"**Object:** `{ip['object_id']}`\n"
+                f"**Impact:** ({ip['impact_latitude']}, {ip['impact_longitude']})\n"
+                f"**ETA:** {ip['seconds_until_impact']:.0f}s\n"
+                f"**Terminal velocity:** {ip['terminal_velocity_m_s']:.0f} m/s\n"
+                f"**95% ellipse:** {ellipse.get('semi_major', '?')}m x {ellipse.get('semi_minor', '?')}m"
+            ),
+        })
+
+    fields.append({
+        "name": "Full Payload",
+        "value": f"```json\n{json.dumps(payload, indent=2, default=str)[:900]}\n```",
+    })
+
     discord_body = {
         "content": f"**{severity} ALERT**",
         "embeds": [
@@ -116,27 +174,7 @@ async def _post_discord(client: httpx.AsyncClient, payload: dict) -> None:
                 "title": f"{severity}: {payload['alert']['classification']}",
                 "description": summary,
                 "color": 0xFF0000 if severity == "CRITICAL" else 0xFFA500,
-                "fields": [
-                    {
-                        "name": "Correlation ID",
-                        "value": f"`{payload['alert']['correlation_id']}`",
-                        "inline": True,
-                    },
-                    {
-                        "name": "Sources",
-                        "value": ", ".join(payload["alert"]["corroborating_sources"]),
-                        "inline": True,
-                    },
-                    {
-                        "name": "Coordinates",
-                        "value": str(payload["alert"].get("coordinates", "N/A")),
-                        "inline": True,
-                    },
-                    {
-                        "name": "Full Payload",
-                        "value": f"```json\n{json.dumps(payload, indent=2, default=str)[:900]}\n```",
-                    },
-                ],
+                "fields": fields,
             }
         ],
     }
