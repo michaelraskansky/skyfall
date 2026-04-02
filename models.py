@@ -13,6 +13,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from ingestion.satcat_lookup import SatcatInfo
 from trajectory.models import ImpactPrediction
 
 
@@ -100,3 +101,4 @@ class CorrelatedEvent(BaseModel):
     summary: str = ""
     corroborating_sources: list[str] = Field(default_factory=list)
     impact_prediction: Optional[ImpactPrediction] = None
+    satcat_info: Optional[SatcatInfo] = None

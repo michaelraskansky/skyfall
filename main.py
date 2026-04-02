@@ -64,6 +64,7 @@ from config import settings
 from ingestion.adsb_poller import poll_adsb
 from ingestion.emergency_webhook import app as webhook_app, set_event_queue
 from ingestion.firms_poller import poll_firms
+from ingestion.satcat_lookup import SatcatLookup
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
@@ -103,6 +104,7 @@ async def triage_loop(
     alert_queue: asyncio.Queue[CorrelatedEvent],
     engine: CorrelationEngine,
     tracker: ObjectTracker,
+    satcat: SatcatLookup,
 ) -> None:
     """
     Continuously dequeue raw sensor events, triage them through the LLM
@@ -165,6 +167,9 @@ async def triage_loop(
             if norad_id:
                 await tracker.track_observation(event)
 
+                # Enrich with SATCAT identity data (cached after first lookup)
+                sat_info = await satcat.get_info(str(norad_id))
+
                 # Only trigger the EKF on real sensor observations (FIRMS,
                 # ADS-B, social media), not TIP predictions.  TIP messages
                 # are revised predictions of a future position, not actual
@@ -176,9 +181,14 @@ async def triage_loop(
 
                 if len(observations) >= 2:
                     try:
+                        obj_label = (
+                            f"{sat_info.object_name} (NORAD {norad_id}, {sat_info.country})"
+                            if sat_info
+                            else f"NORAD {norad_id}"
+                        )
                         logger.info(
-                            "Triggering trajectory prediction for NORAD %s (%d observations)",
-                            norad_id, len(observations),
+                            "Triggering trajectory prediction for %s (%d observations)",
+                            obj_label, len(observations),
                         )
                         request = TrajectoryRequest(
                             object_id=str(norad_id),
@@ -194,18 +204,19 @@ async def triage_loop(
                             longitude=prediction.impact_longitude,
                             contributing_events=[event],
                             summary=(
-                                f"TRAJECTORY PREDICTION: NORAD {norad_id} "
+                                f"TRAJECTORY PREDICTION: {obj_label} "
                                 f"impact at ({prediction.impact_latitude}, {prediction.impact_longitude}) "
                                 f"in {prediction.seconds_until_impact:.0f}s, "
                                 f"terminal velocity {prediction.terminal_velocity_m_s:.0f} m/s"
                             ),
                             corroborating_sources=["spacetrack"],
                             impact_prediction=prediction,
+                            satcat_info=sat_info,
                         )
                         await alert_queue.put(trajectory_event)
                         logger.info(
-                            "Trajectory prediction queued for NORAD %s: impact at (%.4f, %.4f)",
-                            norad_id, prediction.impact_latitude, prediction.impact_longitude,
+                            "Trajectory prediction queued for %s: impact at (%.4f, %.4f)",
+                            obj_label, prediction.impact_latitude, prediction.impact_longitude,
                         )
                     except Exception:
                         logger.warning(
@@ -255,6 +266,9 @@ async def main() -> None:
     tracker = ObjectTracker()
     await tracker.connect()
 
+    satcat = SatcatLookup()
+    await satcat.connect()
+
     tasks = [
         asyncio.create_task(poll_firms(raw_queue), name="firms_poller"),
         asyncio.create_task(poll_adsb(raw_queue), name="adsb_poller"),
@@ -262,7 +276,7 @@ async def main() -> None:
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
         asyncio.create_task(poll_spacetrack(raw_queue), name="spacetrack_poller"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
-        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker), name="triage"),
+        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker, satcat), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),
     ]
 
@@ -303,6 +317,7 @@ async def main() -> None:
 
     await engine.close()
     await tracker.close()
+    await satcat.close()
     await close_llm_client()
     logger.info("Shutdown complete")
 

@@ -81,6 +81,18 @@ def format_alert_payload(event: CorrelatedEvent) -> dict:
             },
         }
 
+    object_info_block = None
+    if event.satcat_info:
+        si = event.satcat_info
+        object_info_block = {
+            "object_name": si.object_name,
+            "norad_cat_id": si.norad_cat_id,
+            "country": si.country,
+            "launch_date": si.launch_date,
+            "object_type": si.object_type,
+            "rcs_size": si.rcs_size,
+        }
+
     return {
         "alert": {
             "correlation_id": event.correlation_id,
@@ -97,5 +109,6 @@ def format_alert_payload(event: CorrelatedEvent) -> dict:
             "llm_analysis": llm_block,
             "contributing_events": contributing_summaries,
             "impact_prediction": impact_block,
+            "object_info": object_info_block,
         }
     }

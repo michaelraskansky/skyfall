@@ -98,6 +98,21 @@ async def _post_slack(client: httpx.AsyncClient, payload: dict) -> None:
             },
         })
 
+    oi = payload["alert"].get("object_info")
+    if oi:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f":satellite: *Object Identity*\n"
+                    f"*Name:* {oi['object_name']} (NORAD {oi['norad_cat_id']})\n"
+                    f"*Origin:* {oi['country']} | Launched {oi['launch_date'] or 'N/A'}\n"
+                    f"*Type:* {oi['object_type'] or 'N/A'} | RCS: {oi['rcs_size'] or 'N/A'}"
+                ),
+            },
+        })
+
     blocks.append({
         "type": "section",
         "text": {
@@ -159,6 +174,17 @@ async def _post_discord(client: httpx.AsyncClient, payload: dict) -> None:
                 f"**ETA:** {ip['seconds_until_impact']:.0f}s\n"
                 f"**Terminal velocity:** {ip['terminal_velocity_m_s']:.0f} m/s\n"
                 f"**95% ellipse:** {ellipse.get('semi_major', '?')}m x {ellipse.get('semi_minor', '?')}m"
+            ),
+        })
+
+    oi = payload["alert"].get("object_info")
+    if oi:
+        fields.append({
+            "name": "Object Identity",
+            "value": (
+                f"**{oi['object_name']}** (NORAD {oi['norad_cat_id']})\n"
+                f"**Origin:** {oi['country']} | Launched {oi['launch_date'] or 'N/A'}\n"
+                f"**Type:** {oi['object_type'] or 'N/A'} | RCS: {oi['rcs_size'] or 'N/A'}"
             ),
         })
 
