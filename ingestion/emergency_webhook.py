@@ -93,6 +93,31 @@ async def receive_emergency(payload: EmergencyPayload, request: Request):
     return {"status": "accepted", "event_id": event.event_id}
 
 
+@app.post("/api/v1/test-event", status_code=202)
+async def inject_test_event(request: Request):
+    """
+    Inject a synthetic sensor event for testing. Bypasses LLM triage.
+    Accepts: {"source": "firms"|"adsb", "latitude": ..., "longitude": ..., "description": ...}
+    """
+    if _event_queue is None:
+        raise HTTPException(status_code=503, detail="Event queue not initialized yet.")
+
+    body = await request.json()
+    source_map = {s.value: s for s in EventSource}
+    source = source_map.get(body.get("source", ""), EventSource.FIRMS)
+
+    event = RawEvent(
+        source=source,
+        latitude=body.get("latitude"),
+        longitude=body.get("longitude"),
+        raw_payload=body,
+        description=body.get("description", "Test event"),
+    )
+
+    await _event_queue.put(event)
+    return {"status": "accepted", "event_id": event.event_id, "source": source.value}
+
+
 @app.get("/health")
 async def health():
     """Readiness probe for load balancers / container orchestrators."""
