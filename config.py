@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     dynamodb_table_name: str = "skyfall-events"
     dynamodb_endpoint_url: str = ""  # Override for local testing
 
+    # -- Space-Track --
+    spacetrack_identity: str = ""
+    spacetrack_password: str = ""
+    spacetrack_poll_interval_sec: int = 1800  # 30 minutes
+
     # -- Alerting --
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""

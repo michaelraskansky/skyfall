@@ -65,6 +65,7 @@ from ingestion.adsb_poller import poll_adsb
 from ingestion.emergency_webhook import app as webhook_app, set_event_queue
 from ingestion.firms_poller import poll_firms
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
+from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventSource, RawEvent
 from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
@@ -142,11 +143,15 @@ async def triage_loop(
                 # already flagged the same area.
                 from models import LLMParsedEvent
 
+                classification = (
+                    "debris_reentry" if event.source == EventSource.SPACETRACK
+                    else "unknown"
+                )
                 synthetic = LLMParsedEvent(
                     is_valid_anomaly=True,
                     approximate_origin=event.description[:100],
                     debris_trajectory_or_blast_radius="unknown",
-                    event_classification="unknown",
+                    event_classification=classification,
                     confidence_score=7,  # structured sensors get baseline 7
                 )
                 await engine.try_correlate(event, synthetic, output_queue=alert_queue)
@@ -195,6 +200,7 @@ async def main() -> None:
         asyncio.create_task(poll_adsb(raw_queue), name="adsb_poller"),
         asyncio.create_task(listen_telegram(raw_queue), name="telegram_listener"),
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
+        asyncio.create_task(poll_spacetrack(raw_queue), name="spacetrack_poller"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
         asyncio.create_task(triage_loop(raw_queue, alert_queue, engine), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),

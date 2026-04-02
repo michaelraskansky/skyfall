@@ -25,6 +25,7 @@ class EventSource(str, Enum):
     ADSB = "adsb"
     SOCIAL_MEDIA = "social_media"
     EMERGENCY_WEBHOOK = "emergency_webhook"
+    SPACETRACK = "spacetrack"
 
 
 class EventSeverity(str, Enum):

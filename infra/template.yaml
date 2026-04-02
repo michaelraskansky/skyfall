@@ -34,6 +34,15 @@ Parameters:
     NoEcho: true
     Default: ""
 
+  SpacetrackIdentity:
+    Type: String
+    Default: ""
+
+  SpacetrackPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+
 Resources:
   EventsTable:
     Type: AWS::DynamoDB::Table
@@ -69,7 +78,9 @@ Resources:
           "FIRMS_API_KEY": "${FirmsApiKey}",
           "ADSB_API_KEY": "${AdsbApiKey}",
           "SLACK_WEBHOOK_URL": "${SlackWebhookUrl}",
-          "DISCORD_WEBHOOK_URL": "${DiscordWebhookUrl}"
+          "DISCORD_WEBHOOK_URL": "${DiscordWebhookUrl}",
+          "SPACETRACK_IDENTITY": "${SpacetrackIdentity}",
+          "SPACETRACK_PASSWORD": "${SpacetrackPassword}"
         }
 
   TaskExecutionRole:
@@ -243,6 +254,10 @@ Resources:
               ValueFrom: !Sub "${AppSecrets}:SLACK_WEBHOOK_URL::"
             - Name: DISCORD_WEBHOOK_URL
               ValueFrom: !Sub "${AppSecrets}:DISCORD_WEBHOOK_URL::"
+            - Name: SPACETRACK_IDENTITY
+              ValueFrom: !Sub "${AppSecrets}:SPACETRACK_IDENTITY::"
+            - Name: SPACETRACK_PASSWORD
+              ValueFrom: !Sub "${AppSecrets}:SPACETRACK_PASSWORD::"
           LogConfiguration:
             LogDriver: awslogs
             Options:
