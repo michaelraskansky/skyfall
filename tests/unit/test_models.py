@@ -1,5 +1,7 @@
 """Unit tests for Pydantic models in models.py."""
 
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,6 +13,7 @@ from models import (
     LLMParsedEvent,
     RawEvent,
 )
+from trajectory.models import ImpactPrediction
 
 
 class TestRawEvent:
@@ -84,3 +87,25 @@ class TestCorrelatedEvent:
     def test_default_contributing_events_empty(self):
         event = CorrelatedEvent()
         assert event.contributing_events == []
+
+    def test_impact_prediction_default_none(self):
+        """CorrelatedEvent.impact_prediction defaults to None."""
+        event = CorrelatedEvent()
+        assert event.impact_prediction is None
+
+    def test_accepts_impact_prediction(self):
+        """CorrelatedEvent can hold an ImpactPrediction."""
+        prediction = ImpactPrediction(
+            object_id="99999",
+            impact_latitude=35.0,
+            impact_longitude=-115.0,
+            impact_altitude_m=0.0,
+            time_of_impact_utc=datetime(2026, 4, 1, 15, 0, 0, tzinfo=timezone.utc),
+            seconds_until_impact=120.0,
+            terminal_velocity_m_s=200.0,
+            covariance_position_enu=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        )
+        event = CorrelatedEvent(impact_prediction=prediction)
+        assert event.impact_prediction is not None
+        assert event.impact_prediction.object_id == "99999"
+        assert event.impact_prediction.impact_latitude == 35.0

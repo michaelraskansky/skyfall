@@ -13,6 +13,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from trajectory.models import ImpactPrediction
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Enums
@@ -97,3 +99,4 @@ class CorrelatedEvent(BaseModel):
     llm_analysis: Optional[LLMParsedEvent] = None
     summary: str = ""
     corroborating_sources: list[str] = Field(default_factory=list)
+    impact_prediction: Optional[ImpactPrediction] = None
