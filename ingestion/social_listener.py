@@ -138,8 +138,16 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
         if not _matches_keywords(text):
             return
 
+        # Extract location from the message text
+        from processing.geoparser import geoparse
+
+        coords = await geoparse(text)
+        lat, lon = coords if coords else (None, None)
+
         event = RawEvent(
             source=EventSource.SOCIAL_MEDIA,
+            latitude=lat,
+            longitude=lon,
             raw_payload={
                 "platform": "telegram",
                 "channel": str(tg_event.chat_id),
@@ -148,7 +156,11 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
             },
             description=f"Telegram keyword match: {text[:200]}",
         )
-        print(f"[TELEGRAM] Keyword hit: {event.description[:120]}", flush=True)
+        print(
+            f"[TELEGRAM] Keyword hit: {event.description[:120]}"
+            f" → coords=({lat}, {lon})",
+            flush=True,
+        )
         await event_queue.put(event)
 
     try:
