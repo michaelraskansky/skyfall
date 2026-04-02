@@ -91,8 +91,14 @@ async def poll_spacetrack(event_queue: Queue[RawEvent]) -> None:
                         continue
                     seen_ids.add(tip_id)
 
-                    lat = tip.get("LAT")
-                    lon = tip.get("LON")
+                    lat_raw = tip.get("LAT")
+                    lon_raw = tip.get("LON")
+
+                    # Normalize: Space-Track uses 0-360° longitude, convert to -180/180°
+                    lat = float(lat_raw) if lat_raw else None
+                    lon = float(lon_raw) if lon_raw else None
+                    if lon is not None and lon > 180:
+                        lon = lon - 360
                     norad_id = tip.get("NORAD_CAT_ID", "?")
                     decay_epoch = tip.get("DECAY_EPOCH", "?")
                     window = tip.get("WINDOW", "?")
@@ -100,8 +106,8 @@ async def poll_spacetrack(event_queue: Queue[RawEvent]) -> None:
 
                     event = RawEvent(
                         source=EventSource.SPACETRACK,
-                        latitude=float(lat) if lat else None,
-                        longitude=float(lon) if lon else None,
+                        latitude=lat,
+                        longitude=lon,
                         raw_payload=tip,
                         description=(
                             f"TIP: NORAD {norad_id} re-entry predicted "
