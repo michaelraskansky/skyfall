@@ -75,6 +75,7 @@ def generate_observations() -> list[dict]:
             "LON": str(noisy_lon),
             "ALTITUDE_M": str(noisy_alt),
             "DECAY_EPOCH": ts.isoformat(),
+            "MSG_EPOCH": ts.strftime("%Y-%m-%d %H:%M:%S"),
             "WINDOW": "5",
             "HIGH_INTEREST": "Y",
             "timestamp": ts.isoformat(),

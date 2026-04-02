@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 import aioboto3
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -71,9 +72,24 @@ class ObjectTracker:
             except (ValueError, TypeError):
                 pass
 
+        # Use MSG_EPOCH from the TIP payload as the observation timestamp.
+        # This is when USSPACECOM generated the prediction — each TIP in a
+        # batch has a different MSG_EPOCH, giving the EKF the time separation
+        # it needs. Falling back to event.timestamp (ingestion wall-clock)
+        # would collapse all batch items to the same instant.
+        obs_timestamp = event.timestamp
+        msg_epoch = event.raw_payload.get("MSG_EPOCH")
+        if msg_epoch:
+            try:
+                obs_timestamp = datetime.strptime(msg_epoch, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                pass
+
         pk = f"object#{norad_id}"
         # Zero-padded UTC ISO timestamp for lexicographic sort
-        ts_str = event.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+        ts_str = obs_timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
         sk = f"{ts_str}#{event.event_id}"
         expires_at = int(time.time()) + _OBJECT_TTL_SEC
 
@@ -85,7 +101,7 @@ class ObjectTracker:
             "latitude": str(event.latitude) if event.latitude is not None else None,
             "longitude": str(event.longitude) if event.longitude is not None else None,
             "altitude_m": str(altitude_m),
-            "timestamp": event.timestamp.isoformat(),
+            "timestamp": obs_timestamp.isoformat(),
             "noise_profile": "satellite",
             "description": event.description,
             "raw_payload": json.dumps(event.raw_payload),
