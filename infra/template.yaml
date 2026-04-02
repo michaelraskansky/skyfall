@@ -139,6 +139,12 @@ Resources:
                 Resource: !GetAtt EventsTable.Arn
 
   # -- Networking --
+  VpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Skyfall VPC Link
+      VpcId: !Ref VpcId
+
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -148,8 +154,8 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: Allow API Gateway VPC Link traffic
+          SourceSecurityGroupId: !Ref VpcLinkSecurityGroup
+          Description: Allow only API Gateway VPC Link traffic
 
   # -- Cloud Map (service discovery for API Gateway) --
   ServiceDiscoveryNamespace:
@@ -177,7 +183,7 @@ Resources:
       Name: skyfall-vpc-link
       SubnetIds: !Ref SubnetIds
       SecurityGroupIds:
-        - !Ref ServiceSecurityGroup
+        - !Ref VpcLinkSecurityGroup
 
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
