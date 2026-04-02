@@ -156,8 +156,8 @@ async def triage_loop(
                 )
                 await engine.try_correlate(event, synthetic, output_queue=alert_queue)
 
-        except Exception:
-            logger.exception("Triage error for event %s", event.event_id)
+        except Exception as exc:
+            logger.error("Triage error for event %s: %s", event.event_id, exc, exc_info=True)
         finally:
             raw_queue.task_done()
 
