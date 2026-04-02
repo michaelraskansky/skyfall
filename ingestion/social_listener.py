@@ -119,7 +119,7 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
 
     session_str = settings.telegram_session
     channels = [c.strip() for c in channels_raw.split(",") if c.strip()]
-    logger.info("Telegram listener starting for channels: %s", channels)
+    print(f"[TELEGRAM] Starting listener for channels: {channels}", flush=True)
 
     # Use StringSession if available (no filesystem session file needed).
     session = StringSession(session_str) if session_str else "debris_tracker_session"
@@ -141,12 +141,16 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
             },
             description=f"Telegram keyword match: {text[:200]}",
         )
-        logger.info("Telegram hit: %s", event.description[:120])
+        print(f"[TELEGRAM] Keyword hit: {event.description[:120]}", flush=True)
         await event_queue.put(event)
 
-    await client.start()
-    logger.info("Telegram client connected.")
-    await client.run_until_disconnected()
+    try:
+        await client.start()
+        print(f"[TELEGRAM] Client connected, listening to {channels}", flush=True)
+        await client.run_until_disconnected()
+    except Exception as e:
+        print(f"[TELEGRAM] Connection error: {e}", flush=True)
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
