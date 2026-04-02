@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # -- Space-Track --
     spacetrack_identity: str = ""
     spacetrack_password: str = ""
-    spacetrack_poll_interval_sec: int = 1800  # 30 minutes
+    spacetrack_poll_interval_sec: int = 300  # 5 minutes
 
     # -- Alerting --
     slack_webhook_url: str = ""
