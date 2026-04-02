@@ -73,6 +73,18 @@ class TrajectoryRequest(BaseModel):
         gt=0,
         description="Time step (seconds) for forward trajectory propagation.",
     )
+    burn_time_seconds: Optional[float] = Field(
+        default=None,
+        description="Override boost-phase burn duration (seconds). Auto-detected if None.",
+    )
+    thrust_to_mass_ratio: Optional[float] = Field(
+        default=None,
+        description="Override thrust/mass ratio during boost (m/s²). Auto-detected if None.",
+    )
+    pitch_angle_deg: Optional[float] = Field(
+        default=None,
+        description="Override pitch angle from horizontal during boost (degrees). Auto-detected if None.",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -116,4 +128,8 @@ class ImpactPrediction(BaseModel):
     filter_state_at_impact: list[float] = Field(
         default_factory=list,
         description="Final 6-element state vector [x,y,z,vx,vy,vz] in ENU (m, m/s).",
+    )
+    flight_phase_detected: str = Field(
+        default="ballistic",
+        description="Initial flight phase detected: 'boost' or 'ballistic'.",
     )
