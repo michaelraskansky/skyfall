@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # -- Telegram Listener --
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
+    telegram_session: str = ""  # StringSession token (avoids interactive login)
     telegram_channels: str = ""
 
     # -- AWS --

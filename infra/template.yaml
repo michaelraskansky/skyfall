@@ -258,6 +258,14 @@ Resources:
               ValueFrom: !Sub "${AppSecrets}:SPACETRACK_IDENTITY::"
             - Name: SPACETRACK_PASSWORD
               ValueFrom: !Sub "${AppSecrets}:SPACETRACK_PASSWORD::"
+            - Name: TELEGRAM_API_ID
+              ValueFrom: !Sub "${AppSecrets}:TELEGRAM_API_ID::"
+            - Name: TELEGRAM_API_HASH
+              ValueFrom: !Sub "${AppSecrets}:TELEGRAM_API_HASH::"
+            - Name: TELEGRAM_SESSION
+              ValueFrom: !Sub "${AppSecrets}:TELEGRAM_SESSION::"
+            - Name: TELEGRAM_CHANNELS
+              ValueFrom: !Sub "${AppSecrets}:TELEGRAM_CHANNELS::"
           LogConfiguration:
             LogDriver: awslogs
             Options:

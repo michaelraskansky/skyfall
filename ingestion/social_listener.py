@@ -84,14 +84,19 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
     # Import Telethon lazily so the rest of the app works without it.
     try:
         from telethon import TelegramClient, events as tg_events
+        from telethon.sessions import StringSession
     except ImportError:
         logger.error("telethon is not installed – Telegram listener disabled.")
+        await asyncio.Event().wait()
         return
 
+    session_str = settings.telegram_session
     channels = [c.strip() for c in channels_raw.split(",") if c.strip()]
     logger.info("Telegram listener starting for channels: %s", channels)
 
-    client = TelegramClient("debris_tracker_session", api_id, api_hash)
+    # Use StringSession if available (no filesystem session file needed).
+    session = StringSession(session_str) if session_str else "debris_tracker_session"
+    client = TelegramClient(session, api_id, api_hash)
 
     @client.on(tg_events.NewMessage(chats=channels))
     async def _on_message(tg_event):
