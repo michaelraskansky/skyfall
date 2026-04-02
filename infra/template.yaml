@@ -8,7 +8,7 @@ Parameters:
 
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnets for ECS tasks and ALB (must be in at least 2 AZs)
+    Description: Subnets for ECS tasks (must be in at least 2 AZs)
 
   ImageUri:
     Type: String
@@ -127,6 +127,7 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource: !GetAtt EventsTable.Arn
 
+  # -- Networking --
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -136,51 +137,62 @@ Resources:
         - IpProtocol: tcp
           FromPort: 8000
           ToPort: 8000
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
-
-  ALBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Skyfall ALB
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
           CidrIp: 0.0.0.0/0
+          Description: Allow API Gateway VPC Link traffic
 
-  ALB:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  # -- Cloud Map (service discovery for API Gateway) --
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::HttpNamespace
     Properties:
-      Name: skyfall-alb
-      Scheme: internet-facing
-      SecurityGroups:
-        - !Ref ALBSecurityGroup
-      Subnets: !Ref SubnetIds
+      Name: skyfall
 
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  ServiceDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
     Properties:
-      Name: skyfall-tg
-      Port: 8000
-      Protocol: HTTP
-      TargetType: ip
-      VpcId: !Ref VpcId
-      HealthCheckPath: /health
-      HealthCheckIntervalSeconds: 30
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 3
+      Name: webhook
+      NamespaceId: !GetAtt ServiceDiscoveryNamespace.Id
 
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
+  # -- API Gateway HTTP API --
+  VpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
     Properties:
-      LoadBalancerArn: !Ref ALB
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
+      Name: skyfall-vpc-link
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref ServiceSecurityGroup
 
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: skyfall-api
+      ProtocolType: HTTP
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: HTTP_PROXY
+      IntegrationUri: !GetAtt ServiceDiscoveryService.Arn
+      IntegrationMethod: ANY
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref VpcLink
+      PayloadFormatVersion: "1.0"
+
+  ApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "$default"
+      Target: !Sub "integrations/${ApiIntegration}"
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  # -- ECS --
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -231,7 +243,6 @@ Resources:
 
   ECSService:
     Type: AWS::ECS::Service
-    DependsOn: Listener
     Properties:
       ServiceName: skyfall
       Cluster: !Ref ECSCluster
@@ -244,15 +255,18 @@ Resources:
           Subnets: !Ref SubnetIds
           SecurityGroups:
             - !Ref ServiceSecurityGroup
-      LoadBalancers:
-        - ContainerName: skyfall
-          ContainerPort: 8000
-          TargetGroupArn: !Ref TargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
+          Port: 8000
 
 Outputs:
   WebhookEndpoint:
     Description: Emergency webhook URL
-    Value: !Sub "http://${ALB.DNSName}/api/v1/emergency"
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/v1/emergency"
+
+  HealthEndpoint:
+    Description: Health check URL
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/health"
 
   DynamoDBTable:
     Description: DynamoDB table name
