@@ -15,9 +15,9 @@ COPY . .
 # Install the project itself
 RUN uv sync --no-dev
 
-EXPOSE 8000
+EXPOSE 8000 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["uv", "run", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health'); r.raise_for_status()"]
+    CMD ["uv", "run", "python", "-c", "import os; import httpx; r = httpx.get(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health'); r.raise_for_status()"]
 
 CMD ["uv", "run", "python", "main.py"]

@@ -135,8 +135,8 @@ Resources:
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 8000
-          ToPort: 8000
+          FromPort: 80
+          ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: Allow API Gateway VPC Link traffic
 
@@ -216,7 +216,7 @@ Resources:
           Image: !Ref ImageUri
           Essential: true
           PortMappings:
-            - ContainerPort: 8000
+            - ContainerPort: 80
               Protocol: tcp
           Environment:
             - Name: AWS_REGION
@@ -225,6 +225,8 @@ Resources:
               Value: !Ref EventsTable
             - Name: LOG_FORMAT
               Value: json
+            - Name: PORT
+              Value: "80"
           Secrets:
             - Name: FIRMS_API_KEY
               ValueFrom: !Sub "${AppSecrets}:FIRMS_API_KEY::"
@@ -257,7 +259,6 @@ Resources:
             - !Ref ServiceSecurityGroup
       ServiceRegistries:
         - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
-          Port: 8000
 
 Outputs:
   WebhookEndpoint:

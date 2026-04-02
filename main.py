@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -166,7 +167,7 @@ async def run_webhook_server() -> None:
     config = uvicorn.Config(
         app=webhook_app,
         host="0.0.0.0",
-        port=8000,
+        port=int(os.environ.get("PORT", "8000")),
         log_level="info",
     )
     server = uvicorn.Server(config)
