@@ -135,7 +135,13 @@ async def listen_telegram(event_queue: Queue[RawEvent]) -> None:
     @client.on(tg_events.NewMessage(chats=channels))
     async def _on_message(tg_event):
         text: str = tg_event.raw_text or ""
-        if not _matches_keywords(text):
+        matched = _matches_keywords(text)
+        print(
+            f"[TELEGRAM] {'MATCH' if matched else 'SKIP '} "
+            f"[{tg_event.chat_id}] {text[:120]}",
+            flush=True,
+        )
+        if not matched:
             return
 
         # Extract location from the message text
