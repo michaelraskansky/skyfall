@@ -17,11 +17,10 @@ class Settings(BaseSettings):
     firms_poll_interval_sec: int = 180
     firms_bounding_boxes: str = "-125,24,-66,50"
 
-    # -- ADS-B Exchange --
-    adsb_api_key: str = ""
-    adsb_api_base_url: str = "https://adsbexchange.com/api/aircraft/v2"
+    # -- ADS-B (OpenSky Network) --
     adsb_poll_interval_sec: int = 30
     adsb_watch_hex_codes: str = ""
+    adsb_bounding_box: str = ""  # "lat_min,lon_min,lat_max,lon_max" or empty for global
 
     # -- Telegram Listener --
     telegram_api_id: int = 0
