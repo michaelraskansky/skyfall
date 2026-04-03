@@ -66,6 +66,11 @@ async def poll_adsb(event_queue: Queue[RawEvent]) -> None:
     Long-running coroutine that polls OpenSky for aircraft states and pushes
     anomalous airspace observations into *event_queue*.
     """
+    # OpenSky blocks AWS IP ranges — disabled until we have a cloud-friendly
+    # ADS-B source (ADS-B Exchange RapidAPI, AeroAPI, or authenticated OpenSky).
+    logger.warning("ADS-B poller disabled – OpenSky blocks cloud IPs.")
+    await asyncio.Event().wait()
+
     interval = settings.adsb_poll_interval_sec
     watch_hexes = _parse_watch_hex_codes(settings.adsb_watch_hex_codes)
 
