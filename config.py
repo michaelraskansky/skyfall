@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # -- ADS-B (OpenSky Network) --
     adsb_poll_interval_sec: int = 30
     adsb_watch_hex_codes: str = ""
-    adsb_bounding_box: str = ""  # "lat_min,lon_min,lat_max,lon_max" or empty for global
+    adsb_bounding_box: str = "28,34,40,60"  # Israel, Jordan, Iraq, Iran
 
     # -- Telegram Listener --
     telegram_api_id: int = 0
