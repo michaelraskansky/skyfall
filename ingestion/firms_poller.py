@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 # ── Tunables ──────────────────────────────────────────────────────────────────
 # Fire Radiative Power threshold (MW).  Normal wildfires sit below ~200 MW;
 # industrial explosions or re-entry events easily exceed 500 MW.
-FRP_THRESHOLD_MW: float = 500.0
+FRP_THRESHOLD_MW: float = 120.0
 
 # Brightness temperature threshold (Kelvin).  VIIRS band I4 saturates around
 # 367 K for low-temp fires; we want only extreme outliers.
-BRIGHTNESS_THRESHOLD_K: float = 400.0
+BRIGHTNESS_THRESHOLD_K: float = 355.0
 
 
 def _parse_bounding_boxes(raw: str) -> list[str]:
