@@ -224,6 +224,11 @@ async def triage_loop(
                             (prediction, obj_label, datetime.now(timezone.utc))
                         )
 
+                        # Reverse-lookup: check pending sirens
+                        await _check_prediction_against_pending_sirens(
+                            prediction, obj_label,
+                        )
+
                         logger.info(
                             "Trajectory prediction queued for %s: impact at (%.4f, %.4f)",
                             obj_label, prediction.impact_latitude, prediction.impact_longitude,
@@ -274,6 +279,19 @@ async def triage_loop(
 _recent_predictions: list[tuple] = []
 _PREDICTION_RETENTION_SEC = 300  # Keep predictions for 5 minutes
 
+# Pending sirens awaiting a trajectory match (reverse-lookup).
+# Zone name -> unix timestamp of siren activation.
+_pending_sirens: dict[str, float] = {}
+_PENDING_SIREN_RETENTION_SEC = 60  # Keep pending sirens for 60 seconds
+
+
+def _prune_pending_sirens() -> None:
+    """Remove pending sirens older than the retention window."""
+    cutoff = datetime.now(timezone.utc).timestamp() - _PENDING_SIREN_RETENTION_SEC
+    expired = [z for z, ts in _pending_sirens.items() if ts < cutoff]
+    for z in expired:
+        del _pending_sirens[z]
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Approximate distance in km between two lat/lon points."""
@@ -283,6 +301,49 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
          * math.sin(dlon / 2) ** 2)
     return 6371.0 * 2 * math.asin(math.sqrt(a))
+
+
+async def _check_prediction_against_pending_sirens(
+    prediction, obj_label: str,
+) -> None:
+    """
+    Reverse-lookup: after an EKF prediction completes, check if any
+    pending (unmatched) sirens are within 50km of the predicted impact.
+
+    If a match is found, fire a retroactive OFFICIAL SIREN CONFIRMED alert
+    and remove the siren from pending (so it doesn't fire twice).
+    """
+    _prune_pending_sirens()
+
+    matched_zones: list[str] = []
+    match_summary = ""
+
+    for zone_name, ts in list(_pending_sirens.items()):
+        zone_coords = ZONE_COORDINATES.get(zone_name)
+        if not zone_coords:
+            continue
+        dist_km = _haversine_km(
+            prediction.impact_latitude, prediction.impact_longitude,
+            zone_coords[0], zone_coords[1],
+        )
+        if dist_km <= 50.0:
+            matched_zones.append(zone_name)
+            match_summary = (
+                f"Object: {obj_label}\n"
+                f"Predicted impact: ({prediction.impact_latitude}, {prediction.impact_longitude})\n"
+                f"Distance to {zone_name}: {dist_km:.1f} km\n"
+                f"Terminal velocity: {prediction.terminal_velocity_m_s:.0f} m/s\n"
+                f"ETA: {prediction.seconds_until_impact:.0f}s"
+            )
+
+    if matched_zones:
+        logger.warning(
+            "Retroactive siren-trajectory match: %s near %s",
+            obj_label, ", ".join(matched_zones),
+        )
+        for z in matched_zones:
+            del _pending_sirens[z]
+        await send_siren_alert(matched_zones, True, match_summary)
 
 
 async def _on_siren(siren_event: SirenEvent) -> None:
@@ -333,6 +394,16 @@ async def _on_siren(siren_event: SirenEvent) -> None:
             break
 
     await send_siren_alert(zones, trajectory_match, match_summary)
+
+    # If no match was found, store in pending for reverse-lookup
+    if not trajectory_match:
+        now_ts = now.timestamp()
+        for zone_name in zones:
+            _pending_sirens[zone_name] = now_ts
+        logger.info(
+            "Siren stored in pending for reverse-lookup: %s",
+            ", ".join(zones),
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
