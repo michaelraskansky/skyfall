@@ -14,6 +14,7 @@ API endpoint: https://www.oref.org.il/warningMessages/alert/Alerts.json
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from datetime import datetime, timezone
@@ -170,13 +171,15 @@ async def poll_sirens(
                     blindness_alerted = False
 
                     text = await resp.text()
+                    # Oref API returns UTF-8 BOM — strip it
+                    text = text.lstrip("\ufeff")
 
                     # The API returns empty string or empty array when no alerts
                     if not text or text.strip() in ("", "[]"):
                         await asyncio.sleep(1)
                         continue
 
-                    alerts = await resp.json(content_type=None)
+                    alerts = json.loads(text)
 
                 # Handle single alert (dict) or multiple (list)
                 if isinstance(alerts, dict):

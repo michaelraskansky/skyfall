@@ -35,6 +35,9 @@ while True:
         with urllib.request.urlopen(req, timeout=5) as resp:
             text = resp.read().decode()
 
+        # Oref API returns UTF-8 BOM — strip it
+        text = text.lstrip("\ufeff")
+
         if not text or text.strip() in ("", "[]"):
             time.sleep(1)
             continue
