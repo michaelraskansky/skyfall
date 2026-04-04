@@ -474,7 +474,9 @@ async def main() -> None:
         asyncio.create_task(listen_telegram(raw_queue), name="telegram_listener"),
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
         asyncio.create_task(poll_spacetrack(raw_queue), name="spacetrack_poller"),
-        asyncio.create_task(poll_sirens(raw_queue, siren_callback=_on_siren), name="siren_listener"),
+        # Siren polling disabled — Oref API blocks cloud IPs (403).
+        # Sirens are received via /api/v1/siren push endpoint from Israeli proxy.
+        # asyncio.create_task(poll_sirens(raw_queue, siren_callback=_on_siren), name="siren_listener"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
         asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker, satcat), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),
