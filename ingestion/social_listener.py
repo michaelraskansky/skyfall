@@ -79,11 +79,19 @@ KEYWORDS: list[str] = [
     # Hebrew
     "פיצוץ",         # explosion
     "טיל",           # missile
+    "טילים",         # missiles
     "רקטה",          # rocket
+    "רקטות",         # rockets
     "תקיפה",         # strike/attack
     "אזעקה",         # alarm/siren
     "שריפה",         # fire
     "הפצצה",         # bombardment
+    # Pikud HaOref specific
+    "היכנסו למרחב המוגן",  # enter protected space
+    "האירוע הסתיים",       # event ended
+    "ירי רקטות",           # rocket fire
+    "חדירת כלי טיס",      # aircraft intrusion
+    "מרחב מוגן",          # protected space
 ]
 
 _KEYWORD_PATTERN = re.compile(
