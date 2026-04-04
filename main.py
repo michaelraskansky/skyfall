@@ -234,30 +234,8 @@ async def triage_loop(
                             obj_label, prediction.impact_latitude, prediction.impact_longitude,
                         )
 
-                        # Generate and upload ground track map (non-blocking)
-                        if prediction.trajectory_points:
-                            try:
-                                map_path = await asyncio.to_thread(
-                                    render_ground_track, prediction, sat_info,
-                                )
-                                ellipse = prediction.covariance_position_enu
-                                cov_ee, cov_en, cov_nn = ellipse[0][0], ellipse[0][1], ellipse[1][1]
-                                tr = cov_ee + cov_nn
-                                det = cov_ee * cov_nn - cov_en ** 2
-                                disc = max((tr / 2) ** 2 - det, 0)
-                                sm = 2.0 * math.sqrt(max(tr / 2 + math.sqrt(disc), 0))
-                                sn = 2.0 * math.sqrt(max(tr / 2 - math.sqrt(disc), 0))
-                                caption = (
-                                    f"Ground Track: {obj_label}\n"
-                                    f"Impact: ({prediction.impact_latitude}, {prediction.impact_longitude}) "
-                                    f"| ETA: {prediction.seconds_until_impact:.0f}s "
-                                    f"| Terminal: {prediction.terminal_velocity_m_s:.0f} m/s\n"
-                                    f"95% ellipse: {sm / 1000:.1f}km x {sn / 1000:.1f}km"
-                                )
-                                await upload_slack_map(map_path, caption)
-                                os.unlink(map_path)
-                            except Exception:
-                                logger.warning("Map generation/upload failed for %s", obj_label, exc_info=True)
+                        # Generate and upload ground track map (background task)
+                        _schedule_map_generation(prediction, sat_info, obj_label)
                     except Exception:
                         logger.warning(
                             "Trajectory prediction failed for NORAD %s, will retry on next observation",
@@ -301,6 +279,49 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
          * math.sin(dlon / 2) ** 2)
     return 6371.0 * 2 * math.asin(math.sqrt(a))
+
+
+async def _generate_and_upload_map(prediction, sat_info, obj_label: str) -> None:
+    """
+    Render a ground track map and upload it to Slack.
+
+    Designed to run as a fire-and-forget background task so
+    it does not block the triage loop. All exceptions are caught
+    and logged — a map failure must never delay text alerts.
+    """
+    try:
+        map_path = await asyncio.to_thread(
+            render_ground_track, prediction, sat_info,
+        )
+        ellipse = prediction.covariance_position_enu
+        cov_ee, cov_en, cov_nn = ellipse[0][0], ellipse[0][1], ellipse[1][1]
+        tr = cov_ee + cov_nn
+        det = cov_ee * cov_nn - cov_en ** 2
+        disc = max((tr / 2) ** 2 - det, 0)
+        sm = 2.0 * math.sqrt(max(tr / 2 + math.sqrt(disc), 0))
+        sn = 2.0 * math.sqrt(max(tr / 2 - math.sqrt(disc), 0))
+        caption = (
+            f"Ground Track: {obj_label}\n"
+            f"Impact: ({prediction.impact_latitude}, {prediction.impact_longitude}) "
+            f"| ETA: {prediction.seconds_until_impact:.0f}s "
+            f"| Terminal: {prediction.terminal_velocity_m_s:.0f} m/s\n"
+            f"95% ellipse: {sm / 1000:.1f}km x {sn / 1000:.1f}km"
+        )
+        await upload_slack_map(map_path, caption)
+        os.unlink(map_path)
+    except Exception:
+        logger.warning(
+            "Map generation/upload failed for %s", obj_label, exc_info=True,
+        )
+
+
+def _schedule_map_generation(prediction, sat_info, obj_label: str) -> None:
+    """Launch map generation as a fire-and-forget background task."""
+    if prediction.trajectory_points:
+        asyncio.create_task(
+            _generate_and_upload_map(prediction, sat_info, obj_label),
+            name=f"map_{obj_label}",
+        )
 
 
 async def _check_prediction_against_pending_sirens(
