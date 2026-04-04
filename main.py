@@ -67,7 +67,7 @@ from ingestion.adsb_poller import poll_adsb
 from ingestion.emergency_webhook import app as webhook_app, set_event_queue
 from ingestion.firms_poller import poll_firms
 from ingestion.satcat_lookup import SatcatLookup
-from ingestion.siren_listener import SirenEvent, poll_sirens, ZONE_COORDINATES
+from ingestion.siren_listener import CATEGORY_LABELS, SirenEvent, poll_sirens, ZONE_COORDINATES
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
@@ -414,7 +414,8 @@ async def _on_siren(siren_event: SirenEvent) -> None:
         if trajectory_match:
             break
 
-    await send_siren_alert(zones, trajectory_match, match_summary)
+    cat_label = CATEGORY_LABELS.get(siren_event.category, siren_event.category)
+    await send_siren_alert(zones, trajectory_match, match_summary, alert_category=cat_label)
 
     # If no match was found, store in pending for reverse-lookup
     if not trajectory_match:

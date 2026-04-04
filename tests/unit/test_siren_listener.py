@@ -3,6 +3,9 @@
 import pytest
 
 from ingestion.siren_listener import (
+    ALERT_CATEGORIES,
+    CATEGORY_LABELS,
+    DRILL_CATEGORIES,
     SirenEvent,
     WATCH_ZONES,
     ZONE_COORDINATES,
@@ -64,6 +67,40 @@ class TestWatchZones:
         alert_zones = ["אשקלון", "באר שבע", "חיפה"]
         matched = [z for z in alert_zones if z in WATCH_ZONES]
         assert matched == []
+
+
+class TestAlertCategories:
+    """Tests for alert category filtering."""
+
+    def test_missile_alert_is_accepted(self):
+        assert "missilealert" in ALERT_CATEGORIES
+
+    def test_uav_is_accepted(self):
+        assert "uav" in ALERT_CATEGORIES
+
+    def test_nonconventional_is_accepted(self):
+        assert "nonconventional" in ALERT_CATEGORIES
+
+    def test_drill_categories_are_rejected(self):
+        assert "missilealertdrill" in DRILL_CATEGORIES
+        assert "uavdrill" in DRILL_CATEGORIES
+        assert "earthquakedrill1" in DRILL_CATEGORIES
+
+    def test_no_overlap_between_alert_and_drill(self):
+        assert ALERT_CATEGORIES.isdisjoint(DRILL_CATEGORIES)
+
+    def test_earthquake_not_in_alert_categories(self):
+        """Earthquakes are not trajectory-relevant."""
+        assert "earthquakealert1" not in ALERT_CATEGORIES
+        assert "earthquakealert2" not in ALERT_CATEGORIES
+
+    def test_all_alert_categories_have_labels(self):
+        for cat in ALERT_CATEGORIES:
+            assert cat in CATEGORY_LABELS, f"Missing label for {cat}"
+
+    def test_category_label_values(self):
+        assert CATEGORY_LABELS["missilealert"] == "Missile"
+        assert CATEGORY_LABELS["uav"] == "UAV/Drone"
 
 
 class TestHaversine:

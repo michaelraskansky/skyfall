@@ -266,17 +266,19 @@ async def send_siren_alert(
     zones: list[str],
     trajectory_match: bool = False,
     prediction_summary: str = "",
+    alert_category: str = "",
 ) -> None:
     """Send a CRITICAL siren alert to Slack and Discord."""
     zone_str = ", ".join(zones)
+    cat_tag = f" [{alert_category}]" if alert_category else ""
 
     if trajectory_match:
         text = (
-            f":red_circle: *OFFICIAL SIREN CONFIRMED for {zone_str}. "
+            f":red_circle: *OFFICIAL SIREN CONFIRMED{cat_tag} for {zone_str}. "
             f"Trajectory match detected!*\n{prediction_summary}"
         )
     else:
-        text = f":red_circle: *SIREN ALERT: {zone_str}*\nNo active trajectory match."
+        text = f":red_circle: *SIREN ALERT{cat_tag}: {zone_str}*\nNo active trajectory match."
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         if settings.slack_webhook_url:

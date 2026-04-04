@@ -49,6 +49,33 @@ _CONSECUTIVE_FAILURE_THRESHOLD = 3
 _BACKOFF_BASE_SEC = 5.0
 _BACKOFF_JITTER_SEC = 2.0
 
+# Alert categories we react to (trajectory-relevant threats).
+# Based on the Pikud HaOref categories API schema.
+ALERT_CATEGORIES: set[str] = {
+    "missilealert",      # Rocket/missile — primary use case
+    "uav",               # UAV/drone alerts
+    "nonconventional",   # CBRN threats
+    "warning",           # General warning
+}
+
+# Categories to explicitly reject (drills, informational).
+# matrix_id >= 100 are drills; update/flash are informational.
+DRILL_CATEGORIES: set[str] = {
+    "missilealertdrill", "uavdrill", "nonconventionaldrill", "warningdrill",
+    "memorialdaydrill1", "memorialdaydrill2",
+    "earthquakedrill1", "earthquakedrill2",
+    "cbrnedrill", "terrorattackdrill", "tsunamidrill", "hazmatdrill",
+    "updatedrill", "flashdrill",
+}
+
+# Human-readable labels for alert categories in Slack/Discord messages.
+CATEGORY_LABELS: dict[str, str] = {
+    "missilealert": "Missile",
+    "uav": "UAV/Drone",
+    "nonconventional": "Non-Conventional",
+    "warning": "General Warning",
+}
+
 # Watch zones — only emit events if these zones appear in the data array.
 WATCH_ZONES: set[str] = {
     "רמת השרון",
@@ -163,8 +190,21 @@ async def poll_sirens(
 
                     title = alert.get("title", "")
                     zones = alert.get("data", [])
-                    category = alert.get("cat", "")
+                    category = str(alert.get("cat", ""))
                     desc = alert.get("desc", "")
+
+                    # Filter by category — only react to trajectory-relevant threats
+                    if category in DRILL_CATEGORIES:
+                        logger.debug(
+                            "Skipping drill alert %s (cat=%s)", alert_id, category,
+                        )
+                        continue
+                    if category and category not in ALERT_CATEGORIES:
+                        logger.debug(
+                            "Skipping non-trajectory alert %s (cat=%s)",
+                            alert_id, category,
+                        )
+                        continue
 
                     # Check if any watch zones are in the alert
                     matched = [z for z in zones if z in WATCH_ZONES]
@@ -189,10 +229,11 @@ async def poll_sirens(
                     lat = sum(lats) / len(lats) if lats else None
                     lon = sum(lons) / len(lons) if lons else None
 
+                    cat_label = CATEGORY_LABELS.get(category, category or "unknown")
                     status = "ACTIVE SIREN" if is_active else "EVENT ENDED"
                     logger.warning(
-                        "[SIREN] %s in %s (alert %s)",
-                        status, ", ".join(matched), alert_id,
+                        "[SIREN] %s %s in %s (alert %s)",
+                        cat_label, status, ", ".join(matched), alert_id,
                     )
 
                     # Push to the shared event queue
@@ -202,8 +243,8 @@ async def poll_sirens(
                         longitude=lon,
                         raw_payload=alert,
                         description=(
-                            f"[SIREN {status}] Zones: {', '.join(matched)} "
-                            f"| Title: {title}"
+                            f"[SIREN {status}] {cat_label} | "
+                            f"Zones: {', '.join(matched)} | Title: {title}"
                         ),
                     )
                     await event_queue.put(raw_event)
