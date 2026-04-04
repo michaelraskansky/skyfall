@@ -335,6 +335,21 @@ async def send_siren_clearance(zones: list[str]) -> None:
                 logger.exception("Siren clearance Discord failed")
 
 
+async def send_system_warning(message: str) -> None:
+    """Send a system health warning to Slack (not a siren or event alert)."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        if settings.slack_webhook_url:
+            try:
+                slack_body = {
+                    "text": f":warning: *SYSTEM WARNING*\n{message}",
+                }
+                resp = await client.post(settings.slack_webhook_url, json=slack_body)
+                resp.raise_for_status()
+                logger.info("System warning sent to Slack: %s", message[:80])
+            except Exception:
+                logger.exception("Failed to send system warning to Slack")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main alerting loop
 # ═══════════════════════════════════════════════════════════════════════════════

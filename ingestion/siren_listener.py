@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 from config import settings
 from models import EventSource, RawEvent
+from output.alerter import send_system_warning
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,11 @@ _HEADERS = {
 # Title strings for alert state detection
 _TITLE_EVENT_ENDED = "האירוע הסתיים"
 _TITLE_ACTIVE_PREFIX = "בדקות הקרובות"
+
+# Resilience: consecutive failure tracking
+_CONSECUTIVE_FAILURE_THRESHOLD = 3
+_BACKOFF_BASE_SEC = 5.0
+_BACKOFF_JITTER_SEC = 2.0
 
 # Watch zones — only emit events if these zones appear in the data array.
 WATCH_ZONES: set[str] = {
@@ -88,6 +95,8 @@ async def poll_sirens(
     logger.info("Siren listener starting – watching zones: %s", WATCH_ZONES)
 
     seen_ids: set[str] = set()
+    consecutive_failures: int = 0
+    blindness_alerted: bool = False
 
     async with aiohttp.ClientSession(headers=_HEADERS) as session:
         while True:
@@ -97,8 +106,41 @@ async def poll_sirens(
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status != 200:
-                        await asyncio.sleep(1)
+                        consecutive_failures += 1
+                        logger.warning(
+                            "Siren poll HTTP %d (failure %d/%d)",
+                            resp.status, consecutive_failures,
+                            _CONSECUTIVE_FAILURE_THRESHOLD,
+                        )
+
+                        if (
+                            consecutive_failures >= _CONSECUTIVE_FAILURE_THRESHOLD
+                            and not blindness_alerted
+                        ):
+                            blindness_alerted = True
+                            await send_system_warning(
+                                f"Siren Feed Blocked: {consecutive_failures} consecutive "
+                                f"failures (last HTTP {resp.status}). "
+                                f"The siren listener may be blind."
+                            )
+
+                        if consecutive_failures >= _CONSECUTIVE_FAILURE_THRESHOLD:
+                            backoff = _BACKOFF_BASE_SEC + random.uniform(
+                                0, _BACKOFF_JITTER_SEC,
+                            )
+                            await asyncio.sleep(backoff)
+                        else:
+                            await asyncio.sleep(1)
                         continue
+
+                    # Success — reset failure state
+                    if consecutive_failures > 0:
+                        logger.info(
+                            "Siren feed recovered after %d failures",
+                            consecutive_failures,
+                        )
+                    consecutive_failures = 0
+                    blindness_alerted = False
 
                     text = await resp.text()
 
@@ -173,7 +215,29 @@ async def poll_sirens(
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Siren poll error")
+                consecutive_failures += 1
+                logger.exception(
+                    "Siren poll error (failure %d/%d)",
+                    consecutive_failures, _CONSECUTIVE_FAILURE_THRESHOLD,
+                )
+
+                if (
+                    consecutive_failures >= _CONSECUTIVE_FAILURE_THRESHOLD
+                    and not blindness_alerted
+                ):
+                    blindness_alerted = True
+                    await send_system_warning(
+                        f"Siren Feed Blocked: {consecutive_failures} consecutive "
+                        f"failures (exception). The siren listener may be blind."
+                    )
+
+                if consecutive_failures >= _CONSECUTIVE_FAILURE_THRESHOLD:
+                    backoff = _BACKOFF_BASE_SEC + random.uniform(
+                        0, _BACKOFF_JITTER_SEC,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    await asyncio.sleep(1)
 
             # Prune seen IDs periodically
             if len(seen_ids) > 10_000:
