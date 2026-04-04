@@ -122,6 +122,30 @@ _LOCATIONS: dict[str, Coords] = {
     # --- Egypt ---
     "القاهرة": (30.04, 31.24),
     "Cairo": (30.04, 31.24),
+    # --- Country-level (for texts that mention countries, not cities) ---
+    "إسرائيل": (31.77, 35.23),   # → Jerusalem
+    "Israel": (31.77, 35.23),
+    "إيران": (35.69, 51.39),     # → Tehran
+    "Iran": (35.69, 51.39),
+    "لبنان": (33.89, 35.50),     # → Beirut
+    "Lebanon": (33.89, 35.50),
+    "سوريا": (33.51, 36.29),     # → Damascus
+    "Syria": (33.51, 36.29),
+    "العراق": (33.31, 44.37),    # → Baghdad
+    "Iraq": (33.31, 44.37),
+    "اليمن": (15.35, 44.21),     # → Sanaa
+    "Yemen": (15.35, 44.21),
+    "الكويت": (29.38, 47.99),    # Kuwait City
+    "Kuwait": (29.38, 47.99),
+    "فلسطين": (31.50, 34.47),    # → Gaza
+    "Palestine": (31.50, 34.47),
+    # --- Additional cities seen in SabrenNewss ---
+    "بني براك": (32.09, 34.83),  # Bnei Brak
+    "رامات غان": (32.08, 34.81), # Ramat Gan
+    "بوشهر": (28.97, 50.84),     # Bushehr
+    "Bushehr": (28.97, 50.84),
+    "هرمز": (27.06, 56.46),      # Strait of Hormuz
+    "Hormuz": (27.06, 56.46),
 }
 
 # Build a case-insensitive regex that matches any known location name.
