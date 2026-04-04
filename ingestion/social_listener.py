@@ -91,6 +91,10 @@ KEYWORDS: list[str] = [
     "האירוע הסתיים",       # event ended
     "ירי רקטות",           # rocket fire
     "חדירת כלי טיס",      # aircraft intrusion
+    "בדקות הקרובות",       # in the coming minutes (siren preamble)
+    "התרעה",              # alert/warning
+    "התרעות",             # alerts/warnings
+    "מבזק",               # flash (Pikud HaOref flash alert prefix)
     "מרחב מוגן",          # protected space
 ]
 
