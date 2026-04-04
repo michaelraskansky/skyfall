@@ -272,6 +272,8 @@ Resources:
               ValueFrom: !Sub "${AppSecrets}:TELEGRAM_SESSION::"
             - Name: TELEGRAM_CHANNELS
               ValueFrom: !Sub "${AppSecrets}:TELEGRAM_CHANNELS::"
+            - Name: API_KEY
+              ValueFrom: !Sub "${AppSecrets}:API_KEY::"
           LogConfiguration:
             LogDriver: awslogs
             Options:

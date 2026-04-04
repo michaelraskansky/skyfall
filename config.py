@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     slack_channel_id: str = ""      # Channel ID for map uploads
     discord_webhook_url: str = ""
 
+    # -- API Security --
+    api_key: str = ""  # Required for POST endpoints; leave empty to disable auth
+
     # -- Logging --
     log_format: str = "json"  # "json" or "console"
 

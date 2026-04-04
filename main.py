@@ -64,7 +64,7 @@ import uvicorn
 
 from config import settings
 from ingestion.adsb_poller import poll_adsb
-from ingestion.emergency_webhook import app as webhook_app, set_event_queue
+from ingestion.emergency_webhook import app as webhook_app, set_event_queue, set_siren_callback
 from ingestion.firms_poller import poll_firms
 from ingestion.satcat_lookup import SatcatLookup
 from ingestion.siren_listener import CATEGORY_LABELS, SirenEvent, poll_sirens, ZONE_COORDINATES
@@ -457,6 +457,7 @@ async def main() -> None:
     alert_queue: asyncio.Queue[CorrelatedEvent] = asyncio.Queue(maxsize=1_000)
 
     set_event_queue(raw_queue)
+    set_siren_callback(_on_siren)
 
     engine = CorrelationEngine()
     await engine.connect()

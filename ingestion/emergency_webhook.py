@@ -1,41 +1,50 @@
 """
-Emergency Webhook Receiver (FastAPI)
-=====================================
+Webhook Receiver (FastAPI)
+===========================
 
-A lightweight FastAPI application that exposes a single POST endpoint:
+Exposes secured POST endpoints for external event ingestion:
 
-    POST /api/v1/emergency
+    POST /api/v1/emergency   — generic emergency events
+    POST /api/v1/siren       — Pikud HaOref siren alerts (structured)
+    POST /api/v1/test-event  — synthetic events for testing
+    GET  /health             — readiness probe (unauthenticated)
 
-Local emergency / weather broadcast systems can push JSON payloads here.
-Each incoming payload is validated, wrapped in a ``RawEvent``, and placed
-onto the shared ``asyncio.Queue`` for triage.
-
-The app is designed to be run by ``uvicorn`` inside the main orchestrator,
-sharing the same event loop.
+All POST endpoints require ``X-API-Key`` header when ``API_KEY`` is configured.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
+from config import settings
 from models import EventSource, RawEvent
+from ingestion.siren_listener import (
+    SirenEvent,
+    ALERT_CATEGORIES,
+    DRILL_CATEGORIES,
+    CATEGORY_LABELS,
+    WATCH_ZONES,
+    ZONE_COORDINATES,
+    _TITLE_EVENT_ENDED,
+)
 
 logger = logging.getLogger(__name__)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Debris Tracker – Emergency Webhook",
-    version="0.1.0",
+    title="Skyfall – Event Ingestion API",
+    version="0.2.0",
 )
 
-# This will be set at startup by the orchestrator so that the endpoint
-# can push events into the shared pipeline.
 _event_queue: asyncio.Queue[RawEvent] | None = None
+_siren_callback = None
 
 
 def set_event_queue(q: asyncio.Queue[RawEvent]) -> None:
@@ -44,12 +53,30 @@ def set_event_queue(q: asyncio.Queue[RawEvent]) -> None:
     _event_queue = q
 
 
-# ── Request schema ────────────────────────────────────────────────────────────
+def set_siren_callback(cb) -> None:
+    """Inject the siren callback for trajectory correlation."""
+    global _siren_callback
+    _siren_callback = cb
+
+
+# ── API Key Auth ──────────────────────────────────────────────────────────────
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: str | None = Depends(_api_key_header)):
+    """Verify the API key if one is configured."""
+    if not settings.api_key:
+        return  # Auth disabled
+    if api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# ── Request schemas ───────────────────────────────────────────────────────────
 
 
 class EmergencyPayload(BaseModel):
     """Schema for incoming emergency webhook POSTs."""
-
     source_system: str = Field(
         ..., description="Name of the upstream system (e.g. 'NWS', 'local_ems')"
     )
@@ -62,19 +89,14 @@ class EmergencyPayload(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-@app.post("/api/v1/emergency", status_code=202)
+@app.post("/api/v1/emergency", status_code=202, dependencies=[Depends(verify_api_key)])
 async def receive_emergency(payload: EmergencyPayload, request: Request):
-    """
-    Accept an emergency broadcast payload, wrap it in a RawEvent, and
-    push it into the processing pipeline.
-    """
+    """Accept an emergency broadcast payload and push into the pipeline."""
     if _event_queue is None:
-        raise HTTPException(
-            status_code=503, detail="Event queue not initialized yet."
-        )
+        raise HTTPException(status_code=503, detail="Event queue not initialized yet.")
 
     event = RawEvent(
         source=EventSource.EMERGENCY_WEBHOOK,
@@ -93,12 +115,98 @@ async def receive_emergency(payload: EmergencyPayload, request: Request):
     return {"status": "accepted", "event_id": event.event_id}
 
 
-@app.post("/api/v1/test-event", status_code=202)
+@app.post("/api/v1/siren", status_code=202, dependencies=[Depends(verify_api_key)])
+async def receive_siren(request: Request):
+    """
+    Accept a raw Pikud HaOref alert JSON (pushed from Israeli proxy).
+    Runs the same logic as poll_sirens: category filter, zone matching,
+    coordinate lookup, and siren callback for trajectory correlation.
+    """
+    if _event_queue is None:
+        raise HTTPException(status_code=503, detail="Event queue not initialized yet.")
+
+    body = await request.json()
+
+    # Accept single alert or array
+    alerts = body if isinstance(body, list) else [body]
+    accepted = []
+
+    for alert in alerts:
+        alert_id = str(alert.get("id", ""))
+        if not alert_id:
+            continue
+
+        title = alert.get("title", "")
+        zones = alert.get("data", [])
+        category = str(alert.get("cat", ""))
+
+        # Category filter — same logic as poll_sirens
+        if category in DRILL_CATEGORIES:
+            continue
+        if category and category not in ALERT_CATEGORIES:
+            continue
+
+        # Zone matching
+        matched = [z for z in zones if z in WATCH_ZONES]
+        if not matched:
+            # Still ingest for correlation even if not a watch zone,
+            # but don't trigger siren callback
+            pass
+
+        is_active = title != _TITLE_EVENT_ENDED
+
+        # Coordinates from matched watch zones
+        if matched:
+            lats = [ZONE_COORDINATES[z][0] for z in matched if z in ZONE_COORDINATES]
+            lons = [ZONE_COORDINATES[z][1] for z in matched if z in ZONE_COORDINATES]
+            lat = sum(lats) / len(lats) if lats else None
+            lon = sum(lons) / len(lons) if lons else None
+        else:
+            lat, lon = None, None
+
+        cat_label = CATEGORY_LABELS.get(category, category or "unknown")
+        status = "ACTIVE SIREN" if is_active else "EVENT ENDED"
+        zone_str = ", ".join(matched) if matched else ", ".join(zones[:3])
+
+        print(
+            f"[SIREN] {cat_label} {status} in {zone_str} (alert {alert_id})",
+            flush=True,
+        )
+
+        # Push to pipeline
+        raw_event = RawEvent(
+            source=EventSource.SIREN,
+            latitude=lat,
+            longitude=lon,
+            raw_payload=alert,
+            description=(
+                f"[SIREN {status}] {cat_label} | "
+                f"Zones: {zone_str} | Title: {title}"
+            ),
+        )
+        await _event_queue.put(raw_event)
+
+        # Trigger siren callback for trajectory correlation
+        if matched and _siren_callback and is_active:
+            siren_event = SirenEvent(
+                alert_id=alert_id,
+                title=title,
+                category=category,
+                zones=zones,
+                matched_watch_zones=matched,
+                description=title,
+                is_active=is_active,
+            )
+            await _siren_callback(siren_event)
+
+        accepted.append({"alert_id": alert_id, "category": cat_label, "zones": zone_str})
+
+    return {"status": "accepted", "alerts": accepted, "count": len(accepted)}
+
+
+@app.post("/api/v1/test-event", status_code=202, dependencies=[Depends(verify_api_key)])
 async def inject_test_event(request: Request):
-    """
-    Inject a synthetic sensor event for testing. Bypasses LLM triage.
-    Accepts: {"source": "firms"|"adsb", "latitude": ..., "longitude": ..., "description": ...}
-    """
+    """Inject a synthetic sensor event for testing."""
     if _event_queue is None:
         raise HTTPException(status_code=503, detail="Event queue not initialized yet.")
 
