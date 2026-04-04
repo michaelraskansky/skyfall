@@ -57,6 +57,7 @@ import math
 import os
 import signal
 import sys
+from datetime import datetime, timezone
 
 import structlog
 import uvicorn
@@ -66,15 +67,15 @@ from ingestion.adsb_poller import poll_adsb
 from ingestion.emergency_webhook import app as webhook_app, set_event_queue
 from ingestion.firms_poller import poll_firms
 from ingestion.satcat_lookup import SatcatLookup
+from ingestion.siren_listener import SirenEvent, poll_sirens, ZONE_COORDINATES
 from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
-from output.alerter import upload_slack_map
+from output.alerter import alert_loop, send_siren_alert, send_siren_clearance, upload_slack_map
 from processing.object_tracker import ObjectTracker
 from trajectory.models import TrajectoryRequest
 from trajectory.predictor import DebrisTrajectoryPredictor
 from visuals.map_generator import render_ground_track
-from output.alerter import alert_loop
 from processing.correlation_engine import CorrelationEngine
 from processing.llm_parser import parse_with_llm, close_client as close_llm_client
 
@@ -217,6 +218,12 @@ async def triage_loop(
                             satcat_info=sat_info,
                         )
                         await alert_queue.put(trajectory_event)
+
+                        # Store for siren-trajectory correlation
+                        _recent_predictions.append(
+                            (prediction, obj_label, datetime.now(timezone.utc))
+                        )
+
                         logger.info(
                             "Trajectory prediction queued for %s: impact at (%.4f, %.4f)",
                             obj_label, prediction.impact_latitude, prediction.impact_longitude,
@@ -256,6 +263,76 @@ async def triage_loop(
             logger.error("Triage error for event %s: %s", event.event_id, exc, exc_info=True)
         finally:
             raw_queue.task_done()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Siren-trajectory correlation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Recent trajectory predictions, accessible to the siren callback.
+# Each entry: (ImpactPrediction, satcat_label, timestamp)
+_recent_predictions: list[tuple] = []
+_PREDICTION_RETENTION_SEC = 300  # Keep predictions for 5 minutes
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Approximate distance in km between two lat/lon points."""
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return 6371.0 * 2 * math.asin(math.sqrt(a))
+
+
+async def _on_siren(siren_event: SirenEvent) -> None:
+    """
+    Callback invoked by the siren listener when a watch zone is hit.
+
+    Checks recent trajectory predictions for proximity to siren zones
+    and sends the appropriate Slack/Discord alert.
+    """
+    zones = siren_event.matched_watch_zones
+
+    if not siren_event.is_active:
+        await send_siren_clearance(zones)
+        return
+
+    # Prune old predictions
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - _PREDICTION_RETENTION_SEC
+    _recent_predictions[:] = [
+        (pred, label, ts) for pred, label, ts in _recent_predictions
+        if ts.timestamp() > cutoff
+    ]
+
+    # Check each recent prediction against the siren zone coordinates
+    trajectory_match = False
+    match_summary = ""
+
+    for pred, label, ts in _recent_predictions:
+        for zone_name in zones:
+            zone_coords = ZONE_COORDINATES.get(zone_name)
+            if not zone_coords:
+                continue
+            dist_km = _haversine_km(
+                pred.impact_latitude, pred.impact_longitude,
+                zone_coords[0], zone_coords[1],
+            )
+            if dist_km <= 50.0:
+                trajectory_match = True
+                match_summary = (
+                    f"Object: {label}\n"
+                    f"Predicted impact: ({pred.impact_latitude}, {pred.impact_longitude})\n"
+                    f"Distance to {zone_name}: {dist_km:.1f} km\n"
+                    f"Terminal velocity: {pred.terminal_velocity_m_s:.0f} m/s\n"
+                    f"ETA: {pred.seconds_until_impact:.0f}s"
+                )
+                break
+        if trajectory_match:
+            break
+
+    await send_siren_alert(zones, trajectory_match, match_summary)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -303,6 +380,7 @@ async def main() -> None:
         asyncio.create_task(listen_telegram(raw_queue), name="telegram_listener"),
         asyncio.create_task(listen_generic_scraper(raw_queue), name="generic_scraper"),
         asyncio.create_task(poll_spacetrack(raw_queue), name="spacetrack_poller"),
+        asyncio.create_task(poll_sirens(raw_queue, siren_callback=_on_siren), name="siren_listener"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
         asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker, satcat), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),

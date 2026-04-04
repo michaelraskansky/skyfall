@@ -258,6 +258,84 @@ async def upload_slack_map(file_path: str, caption: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Siren alert helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def send_siren_alert(
+    zones: list[str],
+    trajectory_match: bool = False,
+    prediction_summary: str = "",
+) -> None:
+    """Send a CRITICAL siren alert to Slack and Discord."""
+    zone_str = ", ".join(zones)
+
+    if trajectory_match:
+        text = (
+            f":red_circle: *OFFICIAL SIREN CONFIRMED for {zone_str}. "
+            f"Trajectory match detected!*\n{prediction_summary}"
+        )
+    else:
+        text = f":red_circle: *SIREN ALERT: {zone_str}*\nNo active trajectory match."
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        if settings.slack_webhook_url:
+            try:
+                slack_body = {
+                    "text": text,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": text},
+                        }
+                    ],
+                }
+                resp = await client.post(settings.slack_webhook_url, json=slack_body)
+                resp.raise_for_status()
+                logger.info("Siren alert sent to Slack")
+            except Exception:
+                logger.exception("Siren Slack alert failed")
+
+        if settings.discord_webhook_url:
+            try:
+                discord_body = {
+                    "content": text.replace("*", "**").replace(":red_circle:", ""),
+                }
+                resp = await client.post(settings.discord_webhook_url, json=discord_body)
+                resp.raise_for_status()
+                logger.info("Siren alert sent to Discord")
+            except Exception:
+                logger.exception("Siren Discord alert failed")
+
+
+async def send_siren_clearance(zones: list[str]) -> None:
+    """Send a clearance message when the siren event ends."""
+    zone_str = ", ".join(zones)
+    text = f":large_green_circle: *EVENT ENDED for {zone_str}.* Residents may leave shelters."
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        if settings.slack_webhook_url:
+            try:
+                slack_body = {"text": text}
+                resp = await client.post(settings.slack_webhook_url, json=slack_body)
+                resp.raise_for_status()
+                logger.info("Siren clearance sent to Slack")
+            except Exception:
+                logger.exception("Siren clearance Slack failed")
+
+        if settings.discord_webhook_url:
+            try:
+                discord_body = {
+                    "content": text.replace("*", "**").replace(":large_green_circle:", ""),
+                }
+                resp = await client.post(settings.discord_webhook_url, json=discord_body)
+                resp.raise_for_status()
+                logger.info("Siren clearance sent to Discord")
+            except Exception:
+                logger.exception("Siren clearance Discord failed")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main alerting loop
 # ═══════════════════════════════════════════════════════════════════════════════
 
