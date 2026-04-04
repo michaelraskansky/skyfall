@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -45,20 +44,15 @@ _GEO_ALT = 13
 
 _OPENSKY_URL = "https://opensky-network.org/api/states/all"
 
-# Minimum heading change (degrees) between two consecutive polls for a
-# flight to be flagged as "suddenly rerouted".
-HEADING_CHANGE_THRESHOLD_DEG: float = 45.0
+from ingestion.adsb_detector import (
+    HEADING_CHANGE_THRESHOLD_DEG,
+    heading_delta as _heading_delta,
+)
 
 
 def _parse_watch_hex_codes(raw: str) -> set[str]:
     """Return lowercased set of hex ICAO24 codes to watch for."""
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
-
-
-def _heading_delta(h1: float, h2: float) -> float:
-    """Compute the smallest angular difference between two headings (0-360)."""
-    d = abs(h1 - h2) % 360
-    return d if d <= 180 else 360 - d
 
 
 async def poll_adsb(event_queue: Queue[RawEvent]) -> None:
