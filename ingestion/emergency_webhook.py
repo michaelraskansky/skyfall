@@ -34,6 +34,7 @@ from ingestion.siren_listener import (
     ZONE_COORDINATES,
     _TITLE_EVENT_ENDED,
 )
+from ingestion.adsb_detector import AircraftDetector, AircraftState
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,14 @@ app = FastAPI(
 
 _event_queue: asyncio.Queue[RawEvent] | None = None
 _siren_callback = None
+
+
+def _parse_watch_hex_codes(raw: str) -> set[str]:
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+_adsb_detector = AircraftDetector(
+    watch_hex_codes=_parse_watch_hex_codes(settings.adsb_watch_hex_codes),
+)
 
 
 def set_event_queue(q: asyncio.Queue[RawEvent]) -> None:
@@ -202,6 +211,35 @@ async def receive_siren(request: Request):
         accepted.append({"alert_id": alert_id, "category": cat_label, "zones": zone_str})
 
     return {"status": "accepted", "alerts": accepted, "count": len(accepted)}
+
+
+@app.post("/api/v1/adsb", status_code=202, dependencies=[Depends(verify_api_key)])
+async def receive_adsb(request: Request):
+    """
+    Accept a batch of aircraft states from an ADS-B proxy and run
+    anomaly detection (emergency squawk, watch hex, heading reroute).
+    Only anomalies are pushed into the pipeline.
+    """
+    if _event_queue is None:
+        raise HTTPException(status_code=503, detail="Event queue not initialized yet.")
+
+    body = await request.json()
+    raw_aircraft = body.get("aircraft", [])
+
+    states = []
+    for ac in raw_aircraft:
+        try:
+            states.append(AircraftState(**ac))
+        except Exception:
+            logger.debug("Skipping invalid aircraft state: %s", ac)
+            continue
+
+    events = _adsb_detector.process_batch(states)
+
+    for event in events:
+        await _event_queue.put(event)
+
+    return {"status": "accepted", "total": len(states), "anomalies": len(events)}
 
 
 @app.post("/api/v1/test-event", status_code=202, dependencies=[Depends(verify_api_key)])
