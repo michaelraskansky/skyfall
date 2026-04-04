@@ -72,6 +72,7 @@ from ingestion.social_listener import listen_generic_scraper, listen_telegram
 from ingestion.spacetrack_poller import poll_spacetrack
 from models import CorrelatedEvent, EventClassification, EventSeverity, EventSource, RawEvent
 from output.alerter import alert_loop, send_siren_alert, send_siren_clearance, upload_slack_map
+from processing.burst_detector import BurstDetector
 from processing.object_tracker import ObjectTracker
 from trajectory.models import TrajectoryRequest
 from trajectory.predictor import DebrisTrajectoryPredictor
@@ -108,6 +109,7 @@ async def triage_loop(
     alert_queue: asyncio.Queue[CorrelatedEvent],
     engine: CorrelationEngine,
     tracker: ObjectTracker,
+    burst_detector: BurstDetector,
     satcat: SatcatLookup,
 ) -> None:
     """
@@ -126,6 +128,14 @@ async def triage_loop(
         try:
             # Always ingest into the correlation engine for geo-indexing.
             await engine.ingest(event)
+
+            # Check for regional burst (multi-source temporal correlation).
+            burst_result = burst_detector.check(event)
+            if burst_result:
+                logger.info(
+                    "BURST DETECTED: %s", burst_result.summary,
+                )
+                await alert_queue.put(burst_result)
 
             # Decide whether LLM parsing is needed.
             needs_llm = event.source in (
@@ -465,6 +475,8 @@ async def main() -> None:
     tracker = ObjectTracker()
     await tracker.connect()
 
+    burst_detector = BurstDetector()
+
     satcat = SatcatLookup()
     await satcat.connect()
 
@@ -478,7 +490,7 @@ async def main() -> None:
         # Sirens are received via /api/v1/siren push endpoint from Israeli proxy.
         # asyncio.create_task(poll_sirens(raw_queue, siren_callback=_on_siren), name="siren_listener"),
         asyncio.create_task(run_webhook_server(), name="webhook_server"),
-        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker, satcat), name="triage"),
+        asyncio.create_task(triage_loop(raw_queue, alert_queue, engine, tracker, burst_detector, satcat), name="triage"),
         asyncio.create_task(alert_loop(alert_queue), name="alerter"),
     ]
 

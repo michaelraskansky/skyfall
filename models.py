@@ -46,6 +46,7 @@ class EventClassification(str, Enum):
     INDUSTRIAL_ACCIDENT = "industrial_accident"
     METEOR = "meteor"
     MILITARY_ACTIVITY = "military_activity"
+    REGIONAL_EVENT = "regional_event"
     UNKNOWN = "unknown"
 
 
