@@ -18,9 +18,19 @@ def _make_event(source: EventSource, lat=None, lon=None):
 
 
 class TestBurstDetector:
+    def test_grace_period_suppresses(self):
+        """Events during startup grace period → no burst."""
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=10)
+        bd.check(_make_event(EventSource.FIRMS))
+        bd.check(_make_event(EventSource.SPACETRACK))
+        bd.check(_make_event(EventSource.SOCIAL_MEDIA))
+        bd.check(_make_event(EventSource.SIREN))
+        result = bd.check(_make_event(EventSource.ADSB))
+        assert result is None  # within grace period
+
     def test_below_event_threshold(self):
         """4 events from 3 sources → no burst."""
-        bd = BurstDetector(min_events=5, min_sources=3)
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=0)
         assert bd.check(_make_event(EventSource.FIRMS)) is None
         assert bd.check(_make_event(EventSource.SPACETRACK)) is None
         assert bd.check(_make_event(EventSource.SOCIAL_MEDIA)) is None
@@ -28,7 +38,7 @@ class TestBurstDetector:
 
     def test_below_source_threshold(self):
         """5 events from 2 sources → no burst."""
-        bd = BurstDetector(min_events=5, min_sources=3)
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=0)
         for _ in range(3):
             bd.check(_make_event(EventSource.FIRMS))
         for _ in range(2):
@@ -37,7 +47,7 @@ class TestBurstDetector:
 
     def test_at_threshold_fires(self):
         """5 events from 3 sources → burst."""
-        bd = BurstDetector(min_events=5, min_sources=3)
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=0)
         bd.check(_make_event(EventSource.FIRMS))
         bd.check(_make_event(EventSource.FIRMS))
         bd.check(_make_event(EventSource.SPACETRACK))
@@ -52,7 +62,7 @@ class TestBurstDetector:
 
     def test_cooldown_suppresses_second_burst(self):
         """After burst fires, suppress for cooldown period."""
-        bd = BurstDetector(min_events=5, min_sources=3, cooldown_sec=300)
+        bd = BurstDetector(min_events=5, min_sources=3, cooldown_sec=300, grace_period_sec=0)
         # Fire first burst
         bd.check(_make_event(EventSource.FIRMS))
         bd.check(_make_event(EventSource.SPACETRACK))
@@ -69,7 +79,7 @@ class TestBurstDetector:
 
     def test_cooldown_expires(self):
         """After cooldown, burst can fire again."""
-        bd = BurstDetector(min_events=5, min_sources=3, cooldown_sec=0.1, window_sec=300)
+        bd = BurstDetector(min_events=5, min_sources=3, cooldown_sec=0.1, window_sec=300, grace_period_sec=0)
         # Fire first burst
         bd.check(_make_event(EventSource.FIRMS))
         bd.check(_make_event(EventSource.SPACETRACK))
@@ -87,7 +97,7 @@ class TestBurstDetector:
 
     def test_window_expiry(self):
         """Events older than window are pruned."""
-        bd = BurstDetector(min_events=5, min_sources=3, window_sec=10)
+        bd = BurstDetector(min_events=5, min_sources=3, window_sec=10, grace_period_sec=0)
 
         # Add 3 events "in the past"
         old_time = time.time() - 15
@@ -102,7 +112,7 @@ class TestBurstDetector:
 
     def test_coordinates_from_first_event_with_location(self):
         """Burst picks first event with lat/lon."""
-        bd = BurstDetector(min_events=5, min_sources=3)
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=0)
         bd.check(_make_event(EventSource.FIRMS))  # no coords
         bd.check(_make_event(EventSource.SPACETRACK, lat=31.5, lon=34.47))
         bd.check(_make_event(EventSource.SOCIAL_MEDIA))
@@ -114,7 +124,7 @@ class TestBurstDetector:
 
     def test_summary_contains_source_names(self):
         """Summary lists all contributing sources."""
-        bd = BurstDetector(min_events=5, min_sources=3)
+        bd = BurstDetector(min_events=5, min_sources=3, grace_period_sec=0)
         bd.check(_make_event(EventSource.FIRMS))
         bd.check(_make_event(EventSource.SPACETRACK))
         bd.check(_make_event(EventSource.SOCIAL_MEDIA))

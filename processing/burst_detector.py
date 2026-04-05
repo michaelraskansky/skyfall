@@ -42,6 +42,7 @@ class BurstDetector:
         min_events: int = 5,
         min_sources: int = 3,
         cooldown_sec: float = 300.0,
+        grace_period_sec: float = 120.0,
     ) -> None:
         self._window_sec = window_sec
         self._min_events = min_events
@@ -50,6 +51,8 @@ class BurstDetector:
 
         self._events: deque[tuple[float, str, RawEvent]] = deque()
         self._last_burst_time: float = 0.0
+        self._start_time: float = time.time()
+        self._grace_period_sec = grace_period_sec
 
     def check(self, event: RawEvent) -> CorrelatedEvent | None:
         """
@@ -67,6 +70,10 @@ class BurstDetector:
         cutoff = now - self._window_sec
         while self._events and self._events[0][0] < cutoff:
             self._events.popleft()
+
+        # Startup grace period — ignore backlog flood from pollers catching up
+        if now - self._start_time < self._grace_period_sec:
+            return None
 
         # Check thresholds
         if len(self._events) < self._min_events:
